@@ -196,7 +196,7 @@ async def select_group(
     group_name = callback.data.split(":", maxsplit=1)[1]
     data = await state.get_data()
     language = _resolve_language(data)
-    days = await schedule_service.list_days()
+    days = await schedule_service.list_days(group_name=group_name)
     await state.update_data(group_name=group_name)
     await state.set_state(StudentStates.day)
     await callback.message.edit_text(TEXTS[language]["choose_day"], reply_markup=_days_keyboard(days, language))
@@ -211,7 +211,8 @@ async def back_to_days(
 ) -> None:
     data = await state.get_data()
     language = _resolve_language(data)
-    days = await schedule_service.list_days()
+    group_name = data.get("group_name")
+    days = await schedule_service.list_days(group_name=group_name)
     await state.set_state(StudentStates.day)
     await callback.message.edit_text(TEXTS[language]["choose_day"], reply_markup=_days_keyboard(days, language))
     await callback.answer()
@@ -238,7 +239,7 @@ async def show_day_schedule(
         await callback.answer()
         return
     lessons = await schedule_service.get_lessons(group_name=group_name, day=day)
-    days = await schedule_service.list_days()
+    days = await schedule_service.list_days(group_name=group_name)
     text = _render_schedule(group_name=group_name, day=day, lessons=lessons, language=language)
     await callback.message.edit_text(text, reply_markup=_schedule_keyboard(days, language))
     await callback.answer()

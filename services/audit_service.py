@@ -36,8 +36,10 @@ class ScheduleService:
         values = await self._session.scalars(query.order_by(Schedule.group_name))
         return [item for item in values if item]
 
-    async def list_days(self) -> list[str]:
+    async def list_days(self, group_name: str | None = None) -> list[str]:
         query = select(Schedule.day).distinct().where(Schedule.day.is_not(None))
+        if group_name:
+            query = query.where(Schedule.group_name == group_name)
         values = [item for item in await self._session.scalars(query) if item]
         order_map = {day: index for index, day in enumerate(DAY_ORDER)}
         return sorted(values, key=lambda item: order_map.get(item, len(order_map)))
