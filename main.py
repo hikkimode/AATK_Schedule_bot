@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, KeyboardButton, ReplyKeyboardMarkup
+from aiohttp import web
 
 from config import load_config
 from database import create_engine_and_sessionmaker, init_database
 from handlers.student import router as student_router
 from handlers.teacher import router as teacher_router
 from middlewares.role_middleware import RoleMiddleware, ServiceMiddleware
+from models import AuditLog, Schedule
 
 
 def build_main_menu(role: str) -> ReplyKeyboardMarkup:
@@ -39,14 +42,32 @@ async def set_commands(bot: Bot) -> None:
     )
 
 
+async def healthcheck(_: web.Request) -> web.Response:
+    return web.Response(text="ok")
+
+
+async def start_healthcheck_server() -> tuple[web.AppRunner, web.TCPSite]:
+    app = web.Application()
+    app.router.add_get("/", healthcheck)
+    app.router.add_get("/health", healthcheck)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "10000"))
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+    return runner, site
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
     config = load_config()
+    _ = (Schedule, AuditLog)
     engine, session_factory = create_engine_and_sessionmaker(config.database_url)
     await init_database(engine)
+    healthcheck_runner, _ = await start_healthcheck_server()
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.update.outer_middleware(RoleMiddleware(config))
@@ -58,6 +79,7 @@ async def main() -> None:
         await dispatcher.start_polling(bot)
     finally:
         await bot.session.close()
+        await healthcheck_runner.cleanup()
         await engine.dispose()
 
 

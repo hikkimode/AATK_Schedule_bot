@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from models import AuditLog
+from models import Base
 
 
 def create_engine_and_sessionmaker(database_url: str) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
@@ -13,4 +13,4 @@ def create_engine_and_sessionmaker(database_url: str) -> tuple[AsyncEngine, asyn
 
 async def init_database(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
-        await connection.run_sync(AuditLog.metadata.create_all, tables=[AuditLog.__table__])
+        await connection.run_sync(Base.metadata.create_all)
