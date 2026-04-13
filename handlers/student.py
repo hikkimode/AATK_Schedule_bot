@@ -13,6 +13,8 @@ from states import StudentStates
 
 router = Router()
 
+NO_SCHEDULE_MESSAGE = "Ошибка: Расписание еще не загружено в систему"
+
 
 DAY_LABELS = {
     "ru": {
@@ -157,6 +159,10 @@ async def select_language(
 ) -> None:
     language = callback.data.split(":", maxsplit=1)[1]
     groups = await schedule_service.list_groups()
+    if not groups:
+        await callback.message.edit_text(NO_SCHEDULE_MESSAGE)
+        await callback.answer()
+        return
     await state.update_data(language=language)
     await state.set_state(StudentStates.group)
     await callback.message.edit_text(TEXTS[language]["choose_group"], reply_markup=_groups_keyboard(groups))
@@ -172,6 +178,10 @@ async def back_to_groups(
     data = await state.get_data()
     language = _resolve_language(data)
     groups = await schedule_service.list_groups()
+    if not groups:
+        await callback.message.edit_text(NO_SCHEDULE_MESSAGE)
+        await callback.answer()
+        return
     await state.set_state(StudentStates.group)
     await callback.message.edit_text(TEXTS[language]["choose_group"], reply_markup=_groups_keyboard(groups))
     await callback.answer()
@@ -219,6 +229,10 @@ async def show_day_schedule(
     group_name = data.get("group_name")
     if group_name is None:
         groups = await schedule_service.list_groups()
+        if not groups:
+            await callback.message.edit_text(NO_SCHEDULE_MESSAGE)
+            await callback.answer()
+            return
         await state.set_state(StudentStates.group)
         await callback.message.edit_text(TEXTS[language]["choose_group"], reply_markup=_groups_keyboard(groups))
         await callback.answer()

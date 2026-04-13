@@ -12,7 +12,7 @@ class Config(BaseSettings):
     )
 
     bot_token: str = Field(alias="BOT_TOKEN")
-    database_url: str = Field(default="sqlite+aiosqlite:///schedule.db", alias="DATABASE_URL")
+    database_url: str = Field(default="sqlite+aiosqlite:///./schedule.db", alias="DATABASE_URL")
     teacher_ids: list[int] = Field(default_factory=list, alias="TEACHER_IDS")
     superadmin_ids: list[int] = Field(default_factory=list, alias="SUPERADMIN_IDS")
 
