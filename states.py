@@ -14,6 +14,7 @@ class TeacherStates(StatesGroup):
     day = State()
     lesson = State()
     action = State()
+    import_file = State()
     subject = State()
     teacher = State()
     room = State()

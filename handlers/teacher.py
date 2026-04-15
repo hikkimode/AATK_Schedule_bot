@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import html
 import re
+import tempfile
+from pathlib import Path
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from services.audit_service import AuditService, LessonPayload, ScheduleService
+from services.audit_service import AuditService, ImportReport, LessonPayload, ScheduleService
 from states import TeacherStates
 
 
@@ -27,7 +29,9 @@ def _access_denied_text() -> str:
 
 def _groups_keyboard(groups: list[str]) -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=group, callback_data=f"teacher_group:{group}") for group in groups]
-    return InlineKeyboardMarkup(inline_keyboard=_chunk_buttons(buttons, 3))
+    rows = _chunk_buttons(buttons, 3)
+    rows.append([InlineKeyboardButton(text="📥 Импорт изменений из Excel", callback_data="teacher_import_excel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _days_keyboard(days: list[str]) -> InlineKeyboardMarkup:
@@ -83,6 +87,23 @@ def _teacher_menu_text(group_name: str, day: str, lesson_number: int, lesson) ->
     return "\n".join(lines)
 
 
+def _import_report_text(report: ImportReport) -> str:
+    groups = ", ".join(report.updated_groups) if report.updated_groups else "—"
+    lines = [
+        "📥 <b>Импорт изменений завершён</b>",
+        "",
+        f"✅ Обновлено строк: <b>{report.updated_rows}</b>",
+        f"📚 Группы с изменениями: <b>{html.escape(groups)}</b>",
+        f"⚠️ Пропущено строк: <b>{report.skipped_rows}</b>",
+    ]
+    if report.errors:
+        lines.extend(["", "📝 Что не удалось обработать:"])
+        lines.extend(f"• {html.escape(error)}" for error in report.errors[:10])
+        if len(report.errors) > 10:
+            lines.append(f"• И ещё {len(report.errors) - 10} строк(и)")
+    return "\n".join(lines)
+
+
 async def _show_groups(message: Message, schedule_service: ScheduleService) -> None:
     groups = await schedule_service.list_groups()
     await message.answer("Выберите группу для редактирования.", reply_markup=_groups_keyboard(groups))
@@ -123,6 +144,25 @@ async def teacher_panel(
     await state.clear()
     await state.set_state(TeacherStates.group)
     await _show_groups(message, schedule_service)
+
+
+@router.callback_query(F.data == "teacher_import_excel")
+async def teacher_import_excel(
+    callback: CallbackQuery,
+    state: FSMContext,
+    role: str,
+) -> None:
+    if role not in {"teacher", "superadmin"}:
+        await callback.answer(_access_denied_text(), show_alert=True)
+        return
+    await state.set_state(TeacherStates.import_file)
+    await callback.message.edit_text(
+        "📥 <b>Импорт изменений из Excel</b>\n\n"
+        "Отправьте файл <b>.xlsx</b> прямо в этот чат.\n"
+        "Ожидаемые колонки:\n"
+        "<code>group_name, day, lesson_number, subject, teacher, room, start_time, end_time</code>"
+    )
+    await callback.answer()
 
 
 @router.callback_query(F.data == "teacher_back:groups")
@@ -371,3 +411,43 @@ async def teacher_set_end_time(
     await state.set_state(TeacherStates.lesson)
     max_lesson_number = await schedule_service.get_max_lesson_number()
     await message.answer(result_text, reply_markup=_lessons_keyboard(max_lesson_number))
+
+
+@router.message(TeacherStates.import_file, F.document)
+async def teacher_process_import_file(
+    message: Message,
+    state: FSMContext,
+    role: str,
+    bot: Bot,
+    schedule_service: ScheduleService,
+) -> None:
+    if role not in {"teacher", "superadmin"}:
+        await message.answer("❌ Ой, кажется, у вас нет доступа к этому разделу")
+        return
+    document = message.document
+    file_name = document.file_name or ""
+    if not file_name.lower().endswith(".xlsx"):
+        await message.answer("❌ Пришлите файл Excel в формате .xlsx")
+        return
+
+    temp_path = Path(tempfile.gettempdir()) / f"{document.file_unique_id}.xlsx"
+    try:
+        await bot.download(document, destination=temp_path)
+        report = await schedule_service.import_changes_from_excel(temp_path)
+    except ValueError as error:
+        await message.answer(f"❌ {html.escape(str(error))}")
+        return
+    except Exception:
+        await message.answer("❌ Не удалось обработать файл. Проверьте Excel и попробуйте снова.")
+        return
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    await state.clear()
+    await message.answer(_import_report_text(report))
+
+
+@router.message(TeacherStates.import_file)
+async def teacher_waiting_import_file(message: Message) -> None:
+    await message.answer("📎 Пожалуйста, отправьте Excel-файл в формате .xlsx")

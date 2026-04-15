@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +14,7 @@ from services.notification_service import NotificationService
 
 
 DAY_ORDER = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
+TIME_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
 
 @dataclass(slots=True)
@@ -25,6 +28,14 @@ class LessonPayload:
     start_time: str
     end_time: str
     is_change: bool = False
+
+
+@dataclass(slots=True)
+class ImportReport:
+    updated_rows: int
+    updated_groups: list[str]
+    skipped_rows: int
+    errors: list[str]
 
 
 class ScheduleService:
@@ -66,6 +77,114 @@ class ScheduleService:
         result = await self._session.execute(query)
         value = result.scalar_one_or_none()
         return value or 4
+
+    async def import_changes_from_excel(self, excel_path: Path) -> ImportReport:
+        import pandas as pd
+
+        dataframe = pd.read_excel(excel_path, dtype=object)
+        required_columns = {
+            "group_name",
+            "day",
+            "lesson_number",
+            "subject",
+            "teacher",
+            "room",
+            "start_time",
+            "end_time",
+        }
+        missing_columns = required_columns.difference(dataframe.columns)
+        if missing_columns:
+            missing = ", ".join(sorted(missing_columns))
+            raise ValueError(f"В Excel отсутствуют обязательные колонки: {missing}.")
+
+        existing_groups = {
+            item
+            for item in await self._session.scalars(
+                select(Schedule.group_name).distinct().where(Schedule.group_name.is_not(None))
+            )
+            if item
+        }
+        updated_rows = 0
+        skipped_rows = 0
+        updated_groups: set[str] = set()
+        errors: list[str] = []
+
+        for row_number, row in enumerate(dataframe.to_dict(orient="records"), start=2):
+            group_name = self._normalize_cell(row.get("group_name"))
+            day = self._normalize_cell(row.get("day"))
+            lesson_number = self._parse_lesson_number(row.get("lesson_number"))
+            if not group_name or not day or lesson_number is None:
+                skipped_rows += 1
+                errors.append(f"Строка {row_number}: заполните group_name, day и lesson_number.")
+                continue
+            if group_name not in existing_groups:
+                skipped_rows += 1
+                errors.append(f"Строка {row_number}: группа {group_name} не найдена.")
+                continue
+            lesson = await self.get_lesson(group_name=group_name, day=day, lesson_number=lesson_number)
+            if lesson is None:
+                skipped_rows += 1
+                errors.append(f"Строка {row_number}: запись {group_name} / {day} / пара {lesson_number} не найдена.")
+                continue
+
+            updates: dict[str, str] = {}
+            validation_failed = False
+            for field_name in ("subject", "teacher", "room", "start_time", "end_time"):
+                value = self._normalize_cell(row.get(field_name))
+                if value is None:
+                    continue
+                if field_name in {"start_time", "end_time"} and not TIME_PATTERN.fullmatch(value):
+                    skipped_rows += 1
+                    errors.append(f"Строка {row_number}: неверный формат времени в колонке {field_name}.")
+                    validation_failed = True
+                    break
+                updates[field_name] = value
+            if validation_failed or not updates:
+                continue
+
+            for field_name, value in updates.items():
+                setattr(lesson, field_name, value)
+            lesson.raw_text = self._build_raw_text(
+                lesson.subject or "",
+                lesson.teacher or "",
+                lesson.room or "",
+            )
+            lesson.is_change = True
+            updated_rows += 1
+            updated_groups.add(group_name)
+
+        await self._session.commit()
+        return ImportReport(
+            updated_rows=updated_rows,
+            updated_groups=sorted(updated_groups),
+            skipped_rows=skipped_rows,
+            errors=errors,
+        )
+
+    @staticmethod
+    def _normalize_cell(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            return None
+        return text
+
+    @staticmethod
+    def _parse_lesson_number(value: object) -> int | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            return None
+        try:
+            return int(float(text))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _build_raw_text(subject: str, teacher: str, room: str) -> str:
+        return f"{subject}\n({teacher})   {room}"
 
 
 class AuditService:
