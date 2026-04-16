@@ -14,7 +14,6 @@ from services.notification_service import NotificationService
 
 
 DAY_ORDER = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
-TIME_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
 
 @dataclass(slots=True)
@@ -135,12 +134,16 @@ class ScheduleService:
                 value = self._normalize_cell(row.get(field_name))
                 if value is None:
                     continue
-                if field_name in {"start_time", "end_time"} and not TIME_PATTERN.fullmatch(value):
-                    skipped_rows += 1
-                    errors.append(f"Строка {row_number}: неверный формат времени в колонке {field_name}.")
-                    validation_failed = True
-                    break
-                updates[field_name] = value
+                if field_name in {"start_time", "end_time"}:
+                    normalized_value = self._normalize_time(value)
+                    if normalized_value is None:
+                        skipped_rows += 1
+                        errors.append(f"Строка {row_number}: неверный формат времени в колонке {field_name}.")
+                        validation_failed = True
+                        break
+                    updates[field_name] = normalized_value
+                else:
+                    updates[field_name] = value
             if validation_failed or not updates:
                 continue
 
@@ -191,6 +194,17 @@ class ScheduleService:
             return int(float(text))
         except ValueError:
             return None
+
+    @staticmethod
+    def _normalize_time(value: str) -> str | None:
+        import re
+        match = re.match(r'^(\d{1,2}):(\d{2})(?::(\d{2}))?$', value)
+        if not match:
+            return None
+        hours, minutes, seconds = match.groups()
+        hours = hours.zfill(2)
+        seconds = seconds or '00'
+        return f"{hours}:{minutes}:{seconds}"
 
     @staticmethod
     def _build_raw_text(subject: str, teacher: str, room: str) -> str:
