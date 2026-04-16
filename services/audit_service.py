@@ -66,8 +66,8 @@ class ScheduleService:
 
     async def get_lesson(self, group_name: str, day: str, lesson_number: int) -> Schedule | None:
         query = select(Schedule).where(
-            Schedule.group_name == group_name,
-            Schedule.day == day,
+            func.lower(func.trim(Schedule.group_name)) == group_name.lower().strip(),
+            func.lower(func.trim(Schedule.day)) == day.lower().strip(),
             Schedule.lesson_number == lesson_number,
         )
         return await self._session.scalar(query)
@@ -98,7 +98,7 @@ class ScheduleService:
             raise ValueError(f"В Excel отсутствуют обязательные колонки: {missing}.")
 
         existing_groups = {
-            item
+            item.lower().strip()
             for item in await self._session.scalars(
                 select(Schedule.group_name).distinct().where(Schedule.group_name.is_not(None))
             )
@@ -117,11 +117,13 @@ class ScheduleService:
                 skipped_rows += 1
                 errors.append(f"Строка {row_number}: заполните group_name, day и lesson_number.")
                 continue
-            if group_name not in existing_groups:
+            if group_name.lower().strip() not in existing_groups:
                 skipped_rows += 1
                 errors.append(f"Строка {row_number}: группа {group_name} не найдена.")
                 continue
+            print(f"Searching for: Group: {group_name}, Day: {day}, Lesson: {lesson_number}")
             lesson = await self.get_lesson(group_name=group_name, day=day, lesson_number=lesson_number)
+            print(f"Found in DB: {'Yes' if lesson else 'No'}")
             if lesson is None:
                 skipped_rows += 1
                 errors.append(f"Строка {row_number}: запись {group_name} / {day} / пара {lesson_number} не найдена.")
@@ -142,6 +144,7 @@ class ScheduleService:
             if validation_failed or not updates:
                 continue
 
+            print(f"Fields modified: {list(updates.keys())}")
             for field_name, value in updates.items():
                 setattr(lesson, field_name, value)
             lesson.raw_text = self._build_raw_text(
@@ -153,7 +156,14 @@ class ScheduleService:
             updated_rows += 1
             updated_groups.add(group_name)
 
-        await self._session.commit()
+        try:
+            await self._session.flush()
+            await self._session.commit()
+            print("Commit successful")
+        except Exception as e:
+            print(f"Commit failed: {e}")
+            await self._session.rollback()
+            raise
         return ImportReport(
             updated_rows=updated_rows,
             updated_groups=sorted(updated_groups),
