@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AuditLog, Schedule
 from services.notification_service import NotificationService
 
 
+logger = logging.getLogger(__name__)
 DAY_ORDER = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
 
 
@@ -96,80 +98,77 @@ class ScheduleService:
             missing = ", ".join(sorted(missing_columns))
             raise ValueError(f"В Excel отсутствуют обязательные колонки: {missing}.")
 
-        existing_groups = {
-            item.lower().strip()
-            for item in await self._session.scalars(
-                select(Schedule.group_name).distinct().where(Schedule.group_name.is_not(None))
-            )
-            if item
-        }
-        updated_rows = 0
+        data_list = []
         skipped_rows = 0
-        updated_groups: set[str] = set()
         errors: list[str] = []
 
         for row_number, row in enumerate(dataframe.to_dict(orient="records"), start=2):
             group_name = self._normalize_cell(row.get("group_name"))
             day = self._normalize_cell(row.get("day"))
             lesson_number = self._parse_lesson_number(row.get("lesson_number"))
+            subject = self._normalize_cell(row.get("subject")) or ""
+            teacher = self._normalize_cell(row.get("teacher")) or ""
+            room = self._normalize_cell(row.get("room")) or ""
+            start_time_raw = self._normalize_cell(row.get("start_time"))
+            end_time_raw = self._normalize_cell(row.get("end_time"))
+
             if not group_name or not day or lesson_number is None:
                 skipped_rows += 1
                 errors.append(f"Строка {row_number}: заполните group_name, day и lesson_number.")
                 continue
-            if group_name.lower().strip() not in existing_groups:
+
+            start_time = self._normalize_time(start_time_raw) if start_time_raw else "00:00:00"
+            end_time = self._normalize_time(end_time_raw) if end_time_raw else "00:00:00"
+            if start_time_raw and not start_time:
                 skipped_rows += 1
-                errors.append(f"Строка {row_number}: группа {group_name} не найдена.")
+                errors.append(f"Строка {row_number}: неверный формат start_time.")
                 continue
-            print(f"Searching for: Group: {group_name}, Day: {day}, Lesson: {lesson_number}")
-            lesson = await self.get_lesson(group_name=group_name, day=day, lesson_number=lesson_number)
-            print(f"Found in DB: {'Yes' if lesson else 'No'}")
-            if lesson is None:
+            if end_time_raw and not end_time:
                 skipped_rows += 1
-                errors.append(f"Строка {row_number}: запись {group_name} / {day} / пара {lesson_number} не найдена.")
+                errors.append(f"Строка {row_number}: неверный формат end_time.")
                 continue
 
-            updates: dict[str, str] = {}
-            validation_failed = False
-            for field_name in ("subject", "teacher", "room", "start_time", "end_time"):
-                value = self._normalize_cell(row.get(field_name))
-                if value is None:
-                    continue
-                if field_name in {"start_time", "end_time"}:
-                    normalized_value = self._normalize_time(value)
-                    if normalized_value is None:
-                        skipped_rows += 1
-                        errors.append(f"Строка {row_number}: неверный формат времени в колонке {field_name}.")
-                        validation_failed = True
-                        break
-                    updates[field_name] = normalized_value
-                else:
-                    updates[field_name] = value
-            if validation_failed or not updates:
-                continue
+            raw_text = self._build_raw_text(subject, teacher, room)
 
-            print(f"Fields modified: {list(updates.keys())}")
-            for field_name, value in updates.items():
-                setattr(lesson, field_name, value)
-            lesson.raw_text = self._build_raw_text(
-                lesson.subject or "",
-                lesson.teacher or "",
-                lesson.room or "",
+            data = {
+                "group_name": group_name,
+                "day": day,
+                "lesson_number": lesson_number,
+                "subject": subject,
+                "teacher": teacher,
+                "room": room,
+                "start_time": start_time,
+                "end_time": end_time,
+                "raw_text": raw_text,
+                "is_change": True,
+            }
+            data_list.append(data)
+
+        if data_list:
+            logger.info(f"Importing {len(data_list)} rows from Excel")
+            stmt = insert(Schedule).values(data_list)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["group_name", "day", "lesson_number"],
+                set_={
+                    "subject": stmt.excluded.subject,
+                    "teacher": stmt.excluded.teacher,
+                    "room": stmt.excluded.room,
+                    "start_time": stmt.excluded.start_time,
+                    "end_time": stmt.excluded.end_time,
+                    "raw_text": stmt.excluded.raw_text,
+                    "is_change": stmt.excluded.is_change,
+                }
             )
-            lesson.is_change = True
-            updated_rows += 1
-            updated_groups.add(group_name)
-
-        try:
-            await self._session.flush()
+            await self._session.execute(stmt)
             await self._session.commit()
-            print("Commit successful")
-        except Exception as e:
-            print(f"Commit failed: {e}")
-            await self._session.rollback()
-            raise
+            logger.info(f"Successfully imported {len(data_list)} rows")
+
+        updated_rows = len(data_list)
+        updated_groups = sorted(set(d["group_name"] for d in data_list))
+
         return ImportReport(
             updated_rows=updated_rows,
-            updated_groups=sorted(updated_groups),
+            updated_groups=updated_groups,
             skipped_rows=skipped_rows,
             errors=errors,
         )

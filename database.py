@@ -13,7 +13,9 @@ def create_engine_and_sessionmaker(database_url: str) -> tuple[AsyncEngine, asyn
             "statement_cache_size": 0
         },
         pool_pre_ping=True,
-        pool_recycle=300
+        pool_recycle=300,
+        pool_size=10,
+        max_overflow=20
     )
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     return engine, session_factory
