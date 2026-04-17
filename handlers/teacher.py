@@ -8,7 +8,7 @@ from pathlib import Path
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from services.audit_service import AuditService, ImportReport, LessonPayload, ScheduleService
 from states import TeacherStates
@@ -25,6 +25,15 @@ def _chunk_buttons(buttons: list[InlineKeyboardButton], width: int) -> list[list
 
 def _access_denied_text() -> str:
     return "Команда доступна только преподавателям и superadmin."
+
+
+def _admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Панель управления", web_app=WebAppInfo(url="https://aatk-schedule-bot.vercel.app"))],
+            [InlineKeyboardButton(text="🛠 Редактор расписания", callback_data="teacher_open_panel")],
+        ]
+    )
 
 
 def _groups_keyboard(groups: list[str]) -> InlineKeyboardMarkup:
@@ -130,6 +139,34 @@ async def _show_actions(callback: CallbackQuery, state: FSMContext, schedule_ser
         _teacher_menu_text(group_name, day, lesson_number, lesson),
         reply_markup=_action_keyboard(has_lesson=lesson is not None, is_change=bool(lesson and lesson.is_change)),
     )
+
+
+@router.message(Command("admin"))
+async def admin_panel(message: Message, role: str) -> None:
+    if role not in {"teacher", "superadmin"}:
+        await message.answer(_access_denied_text())
+        return
+    await message.answer(
+        "<b>🔐 Панель администратора</b>\n\n"
+        "Выберите действие:",
+        reply_markup=_admin_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "teacher_open_panel")
+async def teacher_open_panel(
+    callback: CallbackQuery,
+    state: FSMContext,
+    role: str,
+    schedule_service: ScheduleService,
+) -> None:
+    if role not in {"teacher", "superadmin"}:
+        await callback.answer(_access_denied_text(), show_alert=True)
+        return
+    await state.clear()
+    await state.set_state(TeacherStates.group)
+    await _show_groups(callback.message, schedule_service)
+    await callback.answer()
 
 
 @router.message(Command("teacher"))
