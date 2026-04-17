@@ -92,7 +92,7 @@ export default function Home() {
   });
 
   // List of admin IDs (should match config.superadmin_ids in backend)
-  const ADMIN_IDS = [123456789]; // Replace with actual admin IDs
+  const ADMIN_IDS = [7748463140]; // Replace with actual admin IDs
 
   useEffect(() => {
     if (typeof window !== "undefined") {
