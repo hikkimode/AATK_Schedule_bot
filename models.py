@@ -29,6 +29,26 @@ class Schedule(Base):
     is_change: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
 
 
+class BaseSchedule(Base):
+    """Хранит базовое (первичное) расписание - оригинальный импорт 323 записей.
+
+    Эта таблица неизменна при последующих импортах Excel.
+    Используется для сброса расписания к исходному состоянию.
+    """
+    __tablename__ = "base_schedule"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    day: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lesson_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    teacher: Mapped[str | None] = mapped_column(Text, nullable=True)
+    room: Mapped[str | None] = mapped_column(Text, nullable=True)
+    start_time: Mapped[str | None] = mapped_column(Text, nullable=True)
+    end_time: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

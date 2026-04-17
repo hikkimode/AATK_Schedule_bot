@@ -11,7 +11,7 @@ from sqlalchemy import Select, func, select, delete, case
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import AuditLog, Schedule, UserProfile
+from models import AuditLog, BaseSchedule, Schedule, UserProfile
 from services.notification_service import NotificationService
 
 
@@ -234,6 +234,32 @@ class ScheduleService:
 
         if data_list:
             logger.info(f"Импорт: {len(data_list)} строк, изменений: {len(changes_by_group)} групп")
+
+            # Проверяем, есть ли базовое расписание (первичный импорт)
+            base_count_result = await self._session.execute(select(func.count(BaseSchedule.id)))
+            base_count = base_count_result.scalar() or 0
+            is_first_import = base_count == 0
+
+            if is_first_import:
+                logger.info(f"Первичный импорт: сохраняем {len(data_list)} записей в base_schedule")
+                # Подготовка данных для base_schedule (без is_change)
+                base_data = [
+                    {
+                        "group_name": d["group_name"],
+                        "day": d["day"],
+                        "lesson_number": d["lesson_number"],
+                        "subject": d["subject"],
+                        "teacher": d["teacher"],
+                        "room": d["room"],
+                        "start_time": d["start_time"],
+                        "end_time": d["end_time"],
+                        "raw_text": d["raw_text"],
+                    }
+                    for d in data_list
+                ]
+                await self._session.execute(insert(BaseSchedule).values(base_data))
+
+            # Обновляем текущее расписание (schedule)
             stmt = insert(Schedule).values(data_list)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["group_name", "day", "lesson_number"],
@@ -446,38 +472,76 @@ class AuditService:
         await self._session.flush()
         return await self._commit_and_notify(audit_log)
 
-    async def reset_all_changes(self, tg_id: int, full_name: str) -> None:
+    async def reset_all_changes(self, tg_id: int, full_name: str) -> int:
         """
-        Reset all schedule changes by deleting all records where is_change=True.
-        Restores the system to the Master Schedule (only is_change=False records remain).
+        Сброс расписания к базовому (первичному) состоянию.
+
+        Удаляет все записи из schedule и копирует данные из base_schedule.
+        Возвращает количество восстановленных записей.
+
+        Raises:
+            ValueError: Если base_schedule пуст (базовое расписание не загружено).
         """
         from sqlalchemy import delete
-        
-        # Get count of records to be deleted for logging
-        count_query = select(func.count(Schedule.id)).where(Schedule.is_change == True)
-        count_result = await self._session.scalar(count_query)
-        deleted_count = count_result or 0
-        
-        # Delete all override records
-        delete_query = delete(Schedule).where(Schedule.is_change == True)
-        await self._session.execute(delete_query)
-        await self._session.commit()
-        
-        logger.info(f"Reset all changes: deleted {deleted_count} override records")
-        
-        # Log the action in audit trail
-        audit_log = self._build_audit_log(
-            tg_id=tg_id,
-            full_name=full_name,
-            action="reset_all_changes",
-            group_name="*",
-            day="*",
-            lesson_num=0,
-            old_value=f"Deleted {deleted_count} schedule override records",
-            new_value="Master Schedule restored",
-        )
-        self._session.add(audit_log)
-        await self._session.commit()
+
+        # Проверяем, есть ли базовое расписание
+        base_count_query = select(func.count(BaseSchedule.id))
+        base_count_result = await self._session.scalar(base_count_query)
+        base_count = base_count_result or 0
+
+        if base_count == 0:
+            raise ValueError("Базовое расписание не найдено. Сначала загрузите первичный Excel файл.")
+
+        # Получаем текущее количество записей в schedule для логирования
+        current_count_query = select(func.count(Schedule.id))
+        current_count = await self._session.scalar(current_count_query) or 0
+
+        try:
+            # Удаляем все записи из текущего расписания
+            await self._session.execute(delete(Schedule))
+
+            # Копируем данные из base_schedule в schedule
+            # Используем INSERT ... SELECT для эффективного копирования
+            from sqlalchemy import insert as sa_insert, select as sa_select
+
+            copy_stmt = sa_insert(Schedule).from_select(
+                ["group_name", "day", "lesson_number", "subject", "teacher",
+                 "room", "start_time", "end_time", "raw_text"],
+                sa_select(
+                    BaseSchedule.group_name,
+                    BaseSchedule.day,
+                    BaseSchedule.lesson_number,
+                    BaseSchedule.subject,
+                    BaseSchedule.teacher,
+                    BaseSchedule.room,
+                    BaseSchedule.start_time,
+                    BaseSchedule.end_time,
+                    BaseSchedule.raw_text,
+                )
+            )
+            result = await self._session.execute(copy_stmt)
+            restored_count = result.rowcount
+
+            # Логируем действие
+            audit_log = self._build_audit_log(
+                tg_id=tg_id,
+                full_name=full_name,
+                action="reset_to_base",
+                group_name="*",
+                day="*",
+                lesson_num=0,
+                old_value=f"Schedule had {current_count} records before reset",
+                new_value=f"Restored {restored_count} records from base_schedule",
+            )
+            self._session.add(audit_log)
+
+            await self._session.commit()
+            logger.info(f"Reset to base: removed {current_count} records, restored {restored_count} from base_schedule")
+
+            return restored_count
+        except Exception:
+            await self._session.rollback()
+            raise
 
     async def _get_lesson(self, group_name: str, day: str, lesson_number: int) -> Schedule | None:
         query = select(Schedule).where(

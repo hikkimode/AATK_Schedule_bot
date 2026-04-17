@@ -206,14 +206,15 @@ async def teacher_reset_execute(
         return
     
     try:
-        await audit_service.reset_all_changes(
+        restored_count = await audit_service.reset_all_changes(
             tg_id=callback.from_user.id,
             full_name=callback.from_user.full_name or "Unknown",
         )
         await callback.message.edit_text(
-            "✅ <b>Успешно!</b>\n\n"
-            "Все временные изменения расписания удалены.\n"
-            "Система восстановлена до основного расписания.",
+            f"✅ <b>Успешно!</b>\n\n"
+            f"Расписание сброшено к базовому состоянию.\n"
+            f"Восстановлено записей: <b>{restored_count}</b>\n\n"
+            f"Все изменения из последующих импортов Excel удалены.",
         )
         await state.set_state(TeacherStates.group)
         groups = await schedule_service.list_groups()
@@ -221,6 +222,8 @@ async def teacher_reset_execute(
             "Выберите группу для редактирования.",
             reply_markup=_groups_keyboard(groups),
         )
+    except ValueError as error:
+        await callback.message.edit_text(f"⚠️ {html.escape(str(error))}")
     except Exception as error:
         await callback.message.edit_text(f"❌ Ошибка при сбросе: {html.escape(str(error))}")
     
