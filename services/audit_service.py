@@ -24,9 +24,9 @@ class LessonPayload:
     group_name: str
     day: str
     lesson_number: int
-    subject: str
-    teacher: str
-    room: str
+    subject: str | None
+    teacher: str | None
+    room: str | None
     start_time: str
     end_time: str
     is_change: bool = False
@@ -160,9 +160,9 @@ class ScheduleService:
                 errors.append(f"Строка {row_number}: заполните group_name, day и lesson_number.")
                 continue
 
-            subject = self._normalize_cell(row.get("subject")) or ""
-            teacher = self._normalize_cell(row.get("teacher")) or ""
-            room = self._normalize_cell(row.get("room")) or ""
+            subject = self._normalize_cell(row.get("subject"))
+            teacher = self._normalize_cell(row.get("teacher"))
+            room = self._normalize_cell(row.get("room"))
             start_time_raw = self._normalize_cell(row.get("start_time"))
             end_time_raw = self._normalize_cell(row.get("end_time"))
 
@@ -355,8 +355,11 @@ class ScheduleService:
         return f"{hours}:{minutes}:{seconds}"
 
     @staticmethod
-    def _build_raw_text(subject: str, teacher: str, room: str) -> str:
-        return f"{subject}\n({teacher})   {room}"
+    def _build_raw_text(subject: str | None, teacher: str | None, room: str | None) -> str:
+        subj = subject or ""
+        teach = teacher or ""
+        rm = room or ""
+        return f"{subj}\n({teach})   {rm}"
 
 
 class AuditService:
@@ -618,5 +621,8 @@ class AuditService:
         return json.dumps(data, ensure_ascii=False)
 
     @staticmethod
-    def _build_raw_text(subject: str, teacher: str, room: str) -> str:
-        return f"{subject}\n({teacher})   {room}"
+    def _build_raw_text(subject: str | None, teacher: str | None, room: str | None) -> str:
+        subj = subject or ""
+        teach = teacher or ""
+        rm = room or ""
+        return f"{subj}\n({teach})   {rm}"
