@@ -476,7 +476,7 @@ class AuditService:
         """
         Сброс расписания к базовому (первичному) состоянию.
 
-        Удаляет все записи из schedule и копирует данные из base_schedule.
+        Удаляет ВСЕ записи из schedule (всех групп) и копирует ВСЕ данные из base_schedule.
         Возвращает количество восстановленных записей.
 
         Raises:
@@ -497,30 +497,30 @@ class AuditService:
         current_count = await self._session.scalar(current_count_query) or 0
 
         try:
-            # Удаляем все записи из текущего расписания
+            # Удаляем ВСЕ записи из текущего расписания (без фильтров - все группы)
             await self._session.execute(delete(Schedule))
 
-            # Копируем данные из base_schedule в schedule
-            # Используем INSERT ... SELECT для эффективного копирования
-            from sqlalchemy import insert as sa_insert, select as sa_select
+            # Получаем все записи из base_schedule (все группы, все дни)
+            base_records_result = await self._session.execute(select(BaseSchedule))
+            base_records = base_records_result.scalars().all()
 
-            copy_stmt = sa_insert(Schedule).from_select(
-                ["group_name", "day", "lesson_number", "subject", "teacher",
-                 "room", "start_time", "end_time", "raw_text"],
-                sa_select(
-                    BaseSchedule.group_name,
-                    BaseSchedule.day,
-                    BaseSchedule.lesson_number,
-                    BaseSchedule.subject,
-                    BaseSchedule.teacher,
-                    BaseSchedule.room,
-                    BaseSchedule.start_time,
-                    BaseSchedule.end_time,
-                    BaseSchedule.raw_text,
+            # Восстанавливаем все записи из base_schedule
+            restored_count = 0
+            for base in base_records:
+                schedule_record = Schedule(
+                    group_name=base.group_name,
+                    day=base.day,
+                    lesson_number=base.lesson_number,
+                    subject=base.subject,
+                    teacher=base.teacher,
+                    room=base.room,
+                    start_time=base.start_time,
+                    end_time=base.end_time,
+                    raw_text=base.raw_text,
+                    is_change=False,  # Базовое расписание - не изменения
                 )
-            )
-            result = await self._session.execute(copy_stmt)
-            restored_count = result.rowcount
+                self._session.add(schedule_record)
+                restored_count += 1
 
             # Логируем действие
             audit_log = self._build_audit_log(

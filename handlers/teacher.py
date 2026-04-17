@@ -184,8 +184,9 @@ async def teacher_reset_confirm(
     
     await callback.message.edit_text(
         "⚠️ <b>Внимание!</b>\n\n"
-        "Вы собираетесь удалить все временные изменения расписания.\n"
-        "Система вернётся к основному (базовому) расписанию.\n\n"
+        "Вы собираетесь сбросить расписание <b>всех групп</b> к базовому состоянию.\n"
+        "Все изменения из последующих импортов Excel будут удалены.\n\n"
+        "Система вернётся к первичному расписанию (323 записи).\n\n"
         "Это действие <b>необратимо</b>.\n"
         "Вы уверены?",
         reply_markup=confirm_keyboard,
@@ -210,16 +211,18 @@ async def teacher_reset_execute(
             tg_id=callback.from_user.id,
             full_name=callback.from_user.full_name or "Unknown",
         )
+        # Показываем результат сброса
         await callback.message.edit_text(
             f"✅ <b>Успешно!</b>\n\n"
             f"Расписание сброшено к базовому состоянию.\n"
             f"Восстановлено записей: <b>{restored_count}</b>\n\n"
             f"Все изменения из последующих импортов Excel удалены.",
         )
+        # Отправляем меню групп новым сообщением (чтобы результат оставался виден)
         await state.set_state(TeacherStates.group)
         groups = await schedule_service.list_groups()
-        await callback.message.edit_text(
-            "Выберите группу для редактирования.",
+        await callback.message.answer(
+            "📚 Выберите группу для редактирования:",
             reply_markup=_groups_keyboard(groups),
         )
     except ValueError as error:
