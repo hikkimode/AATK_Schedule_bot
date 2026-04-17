@@ -1,49 +1,81 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { RefreshCw, Users, UserCheck, Pencil, Trash2, Plus, AlertTriangle } from "lucide-react";
 
-interface TelegramUser {
-  id: number;
-  first_name: string;
-  last_name?: string;
-  username?: string;
-  language_code?: string;
-}
+// Icons as simple SVG components
+const RefreshCw = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" />
+    <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+    <path d="M16 21h5v-5" />
+  </svg>
+);
 
-interface TelegramWebApp {
-  ready: () => void;
-  expand: () => void;
-  initDataUnsafe: {
-    user?: TelegramUser;
-  };
-}
+const Users = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+);
+
+const UserCheck = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <polyline points="16 11 18 13 22 9" />
+  </svg>
+);
+
+const Pencil = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+  </svg>
+);
+
+const Trash2 = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" y1="11" x2="10" y2="17" />
+    <line x1="14" y1="11" x2="14" y2="17" />
+  </svg>
+);
+
+const Plus = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
+
+const AlertTriangle = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+    <line x1="12" y1="9" x2="12" y2="13" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+);
+
+const X = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
+const Check = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
 
 declare global {
   interface Window {
     Telegram?: {
-      WebApp: TelegramWebApp;
+      WebApp: any;
     };
   }
 }
@@ -67,6 +99,112 @@ interface ScheduleChange {
 }
 
 const API_BASE_URL = "https://aatk-schedule-bot.onrender.com";
+
+// Simple Button component
+function Button({
+  children,
+  onClick,
+  disabled,
+  className,
+  type = "button",
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  className?: string;
+  type?: "button" | "submit";
+}) {
+  return (
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={`px-3 py-2 rounded-md font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Simple Card component
+function Card({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={`rounded-lg border ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function CardHeader({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={`p-4 ${className}`}>{children}</div>;
+}
+
+function CardTitle({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <h3 className={`font-semibold ${className}`}>{children}</h3>;
+}
+
+function CardContent({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <div className={`p-4 pt-0 ${className}`}>{children}</div>;
+}
+
+// Simple Input component
+function Input({
+  id,
+  type = "text",
+  value,
+  onChange,
+  className,
+  placeholder,
+  min,
+  max,
+}: {
+  id?: string;
+  type?: string;
+  value: string | number;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  className?: string;
+  placeholder?: string;
+  min?: number;
+  max?: number;
+}) {
+  return (
+    <input
+      id={id}
+      type={type}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      min={min}
+      max={max}
+      className={`px-3 py-2 rounded-md border outline-none focus:ring-2 focus:ring-blue-500 ${className}`}
+    />
+  );
+}
+
+// Simple Label component
+function Label({ htmlFor, children, className }: { htmlFor?: string; children: React.ReactNode; className?: string }) {
+  return (
+    <label htmlFor={htmlFor} className={`text-sm font-medium ${className}`}>
+      {children}
+    </label>
+  );
+}
+
+// Simple Badge component
+function Badge({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium ${className}`}>
+      {children}
+    </span>
+  );
+}
+
+// Simple Skeleton loader
+function Skeleton({ className }: { className?: string }) {
+  return (
+    <div className={`animate-pulse rounded ${className}`} />
+  );
+}
 
 export default function Home() {
   const [userName, setUserName] = useState<string>("");
@@ -92,7 +230,7 @@ export default function Home() {
   });
 
   // List of admin IDs (should match config.superadmin_ids in backend)
-  const ADMIN_IDS = [7748463140]; // Replace with actual admin IDs
+  const ADMIN_IDS = [7748463140];
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -120,8 +258,8 @@ export default function Home() {
     }
   }, []);
 
-  const getAuthHeaders = () => {
-    if (!initData) return {};
+  const getAuthHeaders = (): Record<string, string> => {
+    if (!initData) return {} as Record<string, string>;
     return {
       "Authorization": `tma ${initData}`,
       "Content-Type": "application/json",
@@ -292,17 +430,15 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-col min-h-full p-4 gap-4">
+    <div className="flex flex-col min-h-full p-4 gap-4 bg-[#0f0f0f]">
       <header className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-white">
           Привет, {userName || "Гость"}! 👋
         </h1>
         <Button
-          variant="outline"
-          size="sm"
           onClick={fetchData}
           disabled={loadingStats || loadingChanges}
-          className="border-[#2d2d2d] bg-[#1a1a1a] hover:bg-[#2d2d2d] text-white"
+          className="border border-[#2d2d2d] bg-[#1a1a1a] hover:bg-[#2d2d2d] text-white text-sm"
         >
           <RefreshCw
             className={`h-4 w-4 mr-2 ${
@@ -366,117 +502,19 @@ export default function Home() {
           </CardTitle>
           <div className="flex gap-2">
             {isAdmin && (
-              <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button
-                    size="sm"
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
-                  >
-                    <Plus className="h-4 w-4 mr-1" />
-                    Добавить
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="bg-[#1a1a1a] border-[#2d2d2d] text-white">
-                  <DialogHeader>
-                    <DialogTitle>Добавить новую замену</DialogTitle>
-                  </DialogHeader>
-                  <div className="grid gap-4 py-4">
-                    <div className="grid gap-2">
-                      <Label htmlFor="group">Группа</Label>
-                      <Input
-                        id="group"
-                        value={newChange.group_name || ""}
-                        onChange={(e) =>
-                          setNewChange({ ...newChange, group_name: e.target.value })
-                        }
-                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                        placeholder="Например: ИС-101"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="subject">Предмет</Label>
-                      <Input
-                        id="subject"
-                        value={newChange.subject || ""}
-                        onChange={(e) =>
-                          setNewChange({ ...newChange, subject: e.target.value })
-                        }
-                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                        placeholder="Например: Математика"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <Label htmlFor="day">День</Label>
-                        <Input
-                          id="day"
-                          value={newChange.day || ""}
-                          onChange={(e) =>
-                            setNewChange({ ...newChange, day: e.target.value })
-                          }
-                          className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                          placeholder="Понедельник"
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="lesson">Пара №</Label>
-                        <Input
-                          id="lesson"
-                          type="number"
-                          min={1}
-                          max={10}
-                          value={newChange.lesson_number || 1}
-                          onChange={(e) =>
-                            setNewChange({
-                              ...newChange,
-                              lesson_number: parseInt(e.target.value) || 1,
-                            })
-                          }
-                          className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="teacher">Преподаватель</Label>
-                      <Input
-                        id="teacher"
-                        value={newChange.teacher || ""}
-                        onChange={(e) =>
-                          setNewChange({ ...newChange, teacher: e.target.value })
-                        }
-                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                        placeholder="Иванов И.И."
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="room">Аудитория</Label>
-                      <Input
-                        id="room"
-                        value={newChange.room || ""}
-                        onChange={(e) =>
-                          setNewChange({ ...newChange, room: e.target.value })
-                        }
-                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                        placeholder="305"
-                      />
-                    </div>
-                    <Button
-                      onClick={handleAdd}
-                      className="bg-green-600 hover:bg-green-700 text-white mt-2"
-                    >
-                      Сохранить
-                    </Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
+              <Button
+                onClick={() => setIsAddDialogOpen(true)}
+                className="bg-blue-600 hover:bg-blue-700 text-white text-sm"
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Добавить
+              </Button>
             )}
 
             {isAdmin && (
               <Button
-                size="sm"
-                variant="destructive"
                 onClick={handleClearAll}
-                className="bg-red-600/80 hover:bg-red-700 text-white"
+                className="bg-red-600/80 hover:bg-red-700 text-white text-sm"
               >
                 <AlertTriangle className="h-4 w-4 mr-1" />
                 Очистить неделю
@@ -486,163 +524,124 @@ export default function Home() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-[#2d2d2d] hover:bg-transparent">
-                  <TableHead className="text-gray-400">Группа</TableHead>
-                  <TableHead className="text-gray-400">Предмет</TableHead>
-                  <TableHead className="text-gray-400">Пара</TableHead>
-                  <TableHead className="text-gray-400">День</TableHead>
-                  <TableHead className="text-gray-400">Действия</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[#2d2d2d]">
+                  <th className="text-left p-3 text-gray-400 font-medium">Группа</th>
+                  <th className="text-left p-3 text-gray-400 font-medium">Предмет</th>
+                  <th className="text-left p-3 text-gray-400 font-medium">Пара</th>
+                  <th className="text-left p-3 text-gray-400 font-medium">День</th>
+                  <th className="text-left p-3 text-gray-400 font-medium">Действия</th>
+                </tr>
+              </thead>
+              <tbody>
                 {loadingChanges ? (
                   Array.from({ length: 5 }).map((_, i) => (
-                    <TableRow key={i} className="border-[#2d2d2d]">
-                      <TableCell>
-                        <Skeleton className="h-4 w-24 bg-[#2d2d2d]" />
-                      </TableCell>
-                      <TableCell>
-                        <Skeleton className="h-4 w-32 bg-[#2d2d2d]" />
-                      </TableCell>
-                      <TableCell>
-                        <Skeleton className="h-4 w-12 bg-[#2d2d2d]" />
-                      </TableCell>
-                      <TableCell>
-                        <Skeleton className="h-4 w-20 bg-[#2d2d2d]" />
-                      </TableCell>
-                      <TableCell>
-                        <Skeleton className="h-4 w-20 bg-[#2d2d2d]" />
-                      </TableCell>
-                    </TableRow>
+                    <tr key={i} className="border-b border-[#2d2d2d]">
+                      <td className="p-3"><Skeleton className="h-4 w-24 bg-[#2d2d2d]" /></td>
+                      <td className="p-3"><Skeleton className="h-4 w-32 bg-[#2d2d2d]" /></td>
+                      <td className="p-3"><Skeleton className="h-4 w-12 bg-[#2d2d2d]" /></td>
+                      <td className="p-3"><Skeleton className="h-4 w-20 bg-[#2d2d2d]" /></td>
+                      <td className="p-3"><Skeleton className="h-4 w-20 bg-[#2d2d2d]" /></td>
+                    </tr>
                   ))
                 ) : changes.length === 0 ? (
-                  <TableRow className="border-[#2d2d2d]">
-                    <TableCell
-                      colSpan={5}
-                      className="text-center text-gray-500 py-8"
-                    >
+                  <tr className="border-b border-[#2d2d2d]">
+                    <td colSpan={5} className="text-center text-gray-500 py-8">
                       Нет изменений в расписании
-                    </TableCell>
-                  </TableRow>
+                    </td>
+                  </tr>
                 ) : (
                   changes.map((change) => (
-                    <TableRow
-                      key={change.id}
-                      className="border-[#2d2d2d] hover:bg-[#252525]"
-                    >
-                      <TableCell className="font-medium text-white">
+                    <tr key={change.id} className="border-b border-[#2d2d2d] hover:bg-[#252525]">
+                      <td className="p-3 font-medium text-white">
                         {editingId === change.id ? (
                           <Input
                             value={editForm.group_name || ""}
-                            onChange={(e) =>
-                              setEditForm({
-                                ...editForm,
-                                group_name: e.target.value,
-                              })
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                              setEditForm({ ...editForm, group_name: e.target.value })
                             }
-                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8"
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8 text-sm"
                           />
                         ) : (
-                          <Badge
-                            variant="secondary"
-                            className="bg-blue-950/50 text-blue-300 border-blue-900"
-                          >
+                          <Badge className="bg-blue-950/50 text-blue-300 border border-blue-900">
                             {change.group_name || "—"}
                           </Badge>
                         )}
-                      </TableCell>
-                      <TableCell className="text-gray-300">
+                      </td>
+                      <td className="p-3 text-gray-300">
                         {editingId === change.id ? (
                           <Input
                             value={editForm.subject || ""}
-                            onChange={(e) =>
-                              setEditForm({
-                                ...editForm,
-                                subject: e.target.value,
-                              })
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                              setEditForm({ ...editForm, subject: e.target.value })
                             }
-                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8"
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8 text-sm"
                           />
                         ) : (
                           change.subject || "—"
                         )}
-                      </TableCell>
-                      <TableCell className="text-white">
+                      </td>
+                      <td className="p-3 text-white">
                         {editingId === change.id ? (
                           <Input
                             type="number"
                             min={1}
                             max={10}
                             value={editForm.lesson_number || 1}
-                            onChange={(e) =>
-                              setEditForm({
-                                ...editForm,
-                                lesson_number: parseInt(e.target.value) || 1,
-                              })
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                              setEditForm({ ...editForm, lesson_number: parseInt(e.target.value) || 1 })
                             }
-                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8 w-16"
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8 w-16 text-sm"
                           />
                         ) : (
-                          <Badge
-                            variant="outline"
-                            className="border-[#2d2d2d] text-gray-300"
-                          >
+                          <Badge className="border border-[#2d2d2d] text-gray-300">
                             {change.lesson_number || "—"}
                           </Badge>
                         )}
-                      </TableCell>
-                      <TableCell className="text-gray-400 text-sm">
+                      </td>
+                      <td className="p-3 text-gray-400 text-sm">
                         {editingId === change.id ? (
                           <Input
                             value={editForm.day || ""}
-                            onChange={(e) =>
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                               setEditForm({ ...editForm, day: e.target.value })
                             }
-                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8"
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8 text-sm"
                           />
                         ) : (
                           change.day || "—"
                         )}
-                      </TableCell>
-                      <TableCell>
+                      </td>
+                      <td className="p-3">
                         <div className="flex gap-2">
                           {editingId === change.id ? (
                             <>
                               <Button
-                                size="sm"
-                                variant="ghost"
                                 onClick={() => handleEditSave(change.id)}
-                                className="h-8 w-8 p-0 text-green-400 hover:text-green-300 hover:bg-green-950/30"
+                                className="h-8 w-8 p-0 text-green-400 hover:text-green-300 hover:bg-green-950/30 bg-transparent border-0"
                               >
-                                ✓
+                                <Check className="h-4 w-4" />
                               </Button>
                               <Button
-                                size="sm"
-                                variant="ghost"
                                 onClick={() => setEditingId(null)}
-                                className="h-8 w-8 p-0 text-gray-400 hover:text-gray-300 hover:bg-gray-800"
+                                className="h-8 w-8 p-0 text-gray-400 hover:text-gray-300 hover:bg-gray-800 bg-transparent border-0"
                               >
-                                ✕
+                                <X className="h-4 w-4" />
                               </Button>
                             </>
                           ) : (
                             <>
                               <Button
-                                size="sm"
-                                variant="ghost"
                                 onClick={() => handleEditStart(change)}
-                                className="h-8 w-8 p-0 text-blue-400 hover:text-blue-300 hover:bg-blue-950/30"
+                                className="h-8 w-8 p-0 text-blue-400 hover:text-blue-300 hover:bg-blue-950/30 bg-transparent border-0"
                               >
                                 <Pencil className="h-4 w-4" />
                               </Button>
                               {isAdmin && (
                                 <Button
-                                  size="sm"
-                                  variant="ghost"
                                   onClick={() => handleDelete(change.id)}
-                                  className="h-8 w-8 p-0 text-red-400 hover:text-red-300 hover:bg-red-950/30"
+                                  className="h-8 w-8 p-0 text-red-400 hover:text-red-300 hover:bg-red-950/30 bg-transparent border-0"
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
@@ -650,15 +649,116 @@ export default function Home() {
                             </>
                           )}
                         </div>
-                      </TableCell>
-                    </TableRow>
+                      </td>
+                    </tr>
                   ))
                 )}
-              </TableBody>
-            </Table>
+              </tbody>
+            </table>
           </div>
         </CardContent>
       </Card>
+
+      {/* Modal Dialog */}
+      {isAddDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-[#1a1a1a] border border-[#2d2d2d] rounded-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="p-4 border-b border-[#2d2d2d] flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-white">Добавить новую замену</h2>
+              <Button
+                onClick={() => setIsAddDialogOpen(false)}
+                className="h-8 w-8 p-0 text-gray-400 hover:text-white bg-transparent border-0"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="p-4 grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="group" className="text-gray-300">Группа</Label>
+                <Input
+                  id="group"
+                  value={newChange.group_name || ""}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setNewChange({ ...newChange, group_name: e.target.value })
+                  }
+                  className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                  placeholder="Например: ИС-101"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="subject" className="text-gray-300">Предмет</Label>
+                <Input
+                  id="subject"
+                  value={newChange.subject || ""}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setNewChange({ ...newChange, subject: e.target.value })
+                  }
+                  className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                  placeholder="Например: Математика"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="day" className="text-gray-300">День</Label>
+                  <Input
+                    id="day"
+                    value={newChange.day || ""}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setNewChange({ ...newChange, day: e.target.value })
+                    }
+                    className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                    placeholder="Понедельник"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="lesson" className="text-gray-300">Пара №</Label>
+                  <Input
+                    id="lesson"
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={newChange.lesson_number || 1}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setNewChange({ ...newChange, lesson_number: parseInt(e.target.value) || 1 })
+                    }
+                    className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="teacher" className="text-gray-300">Преподаватель</Label>
+                <Input
+                  id="teacher"
+                  value={newChange.teacher || ""}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setNewChange({ ...newChange, teacher: e.target.value })
+                  }
+                  className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                  placeholder="Иванов И.И."
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="room" className="text-gray-300">Аудитория</Label>
+                <Input
+                  id="room"
+                  value={newChange.room || ""}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setNewChange({ ...newChange, room: e.target.value })
+                  }
+                  className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                  placeholder="305"
+                />
+              </div>
+              <Button
+                onClick={handleAdd}
+                className="bg-green-600 hover:bg-green-700 text-white mt-2"
+              >
+                Сохранить
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
