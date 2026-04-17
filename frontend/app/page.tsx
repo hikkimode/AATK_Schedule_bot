@@ -13,7 +13,16 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, Users, UserCheck } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { RefreshCw, Users, UserCheck, Pencil, Trash2, Plus, AlertTriangle } from "lucide-react";
 
 interface TelegramUser {
   id: number;
@@ -66,6 +75,17 @@ export default function Home() {
   const [loadingStats, setLoadingStats] = useState(true);
   const [loadingChanges, setLoadingChanges] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<Partial<ScheduleChange>>({});
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [newChange, setNewChange] = useState<Partial<ScheduleChange>>({
+    group_name: "",
+    subject: "",
+    day: "",
+    lesson_number: 1,
+    teacher: "",
+    room: "",
+  });
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.Telegram?.WebApp) {
@@ -117,6 +137,81 @@ export default function Home() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const handleDelete = async (id: number) => {
+    if (!window.confirm("Вы уверены, что хотите удалить эту замену?")) return;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/schedule/changes/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Failed to delete: " + res.status);
+      await fetchData();
+    } catch (err) {
+      console.error("Delete error:", err);
+      setError(err instanceof Error ? err.message : "Delete failed");
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!window.confirm("Вы уверены, что хотите удалить ВСЕ замены? Это действие нельзя отменить!")) return;
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/schedule/changes/clear-all`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error("Failed to clear all: " + res.status);
+      await fetchData();
+    } catch (err) {
+      console.error("Clear all error:", err);
+      setError(err instanceof Error ? err.message : "Clear all failed");
+    }
+  };
+
+  const handleEditStart = (change: ScheduleChange) => {
+    setEditingId(change.id);
+    setEditForm({ ...change });
+  };
+
+  const handleEditSave = async (id: number) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/schedule/changes/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm),
+      });
+      if (!res.ok) throw new Error("Failed to update: " + res.status);
+      setEditingId(null);
+      await fetchData();
+    } catch (err) {
+      console.error("Update error:", err);
+      setError(err instanceof Error ? err.message : "Update failed");
+    }
+  };
+
+  const handleAdd = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/schedule/changes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newChange),
+      });
+      if (!res.ok) throw new Error("Failed to create: " + res.status);
+      setIsAddDialogOpen(false);
+      setNewChange({
+        group_name: "",
+        subject: "",
+        day: "",
+        lesson_number: 1,
+        teacher: "",
+        room: "",
+      });
+      await fetchData();
+    } catch (err) {
+      console.error("Create error:", err);
+      setError(err instanceof Error ? err.message : "Create failed");
+    }
+  };
 
   return (
     <div className="flex flex-col min-h-full p-4 gap-4">
@@ -187,10 +282,125 @@ export default function Home() {
       </div>
 
       <Card className="bg-[#1a1a1a] border-[#2d2d2d] flex-1">
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-lg font-semibold text-white">
             Изменения расписания
           </CardTitle>
+          <div className="flex gap-2">
+            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+              <DialogTrigger asChild>
+                <Button
+                  size="sm"
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Добавить
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="bg-[#1a1a1a] border-[#2d2d2d] text-white">
+                <DialogHeader>
+                  <DialogTitle>Добавить новую замену</DialogTitle>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="group">Группа</Label>
+                    <Input
+                      id="group"
+                      value={newChange.group_name || ""}
+                      onChange={(e) =>
+                        setNewChange({ ...newChange, group_name: e.target.value })
+                      }
+                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                      placeholder="Например: ИС-101"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="subject">Предмет</Label>
+                    <Input
+                      id="subject"
+                      value={newChange.subject || ""}
+                      onChange={(e) =>
+                        setNewChange({ ...newChange, subject: e.target.value })
+                      }
+                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                      placeholder="Например: Математика"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="day">День</Label>
+                      <Input
+                        id="day"
+                        value={newChange.day || ""}
+                        onChange={(e) =>
+                          setNewChange({ ...newChange, day: e.target.value })
+                        }
+                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                        placeholder="Понедельник"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="lesson">Пара №</Label>
+                      <Input
+                        id="lesson"
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={newChange.lesson_number || 1}
+                        onChange={(e) =>
+                          setNewChange({
+                            ...newChange,
+                            lesson_number: parseInt(e.target.value) || 1,
+                          })
+                        }
+                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="teacher">Преподаватель</Label>
+                    <Input
+                      id="teacher"
+                      value={newChange.teacher || ""}
+                      onChange={(e) =>
+                        setNewChange({ ...newChange, teacher: e.target.value })
+                      }
+                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                      placeholder="Иванов И.И."
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="room">Аудитория</Label>
+                    <Input
+                      id="room"
+                      value={newChange.room || ""}
+                      onChange={(e) =>
+                        setNewChange({ ...newChange, room: e.target.value })
+                      }
+                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                      placeholder="305"
+                    />
+                  </div>
+                  <Button
+                    onClick={handleAdd}
+                    className="bg-green-600 hover:bg-green-700 text-white mt-2"
+                  >
+                    Сохранить
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={handleClearAll}
+              className="bg-red-600/80 hover:bg-red-700 text-white"
+            >
+              <AlertTriangle className="h-4 w-4 mr-1" />
+              Очистить неделю
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -201,6 +411,7 @@ export default function Home() {
                   <TableHead className="text-gray-400">Предмет</TableHead>
                   <TableHead className="text-gray-400">Пара</TableHead>
                   <TableHead className="text-gray-400">День</TableHead>
+                  <TableHead className="text-gray-400">Действия</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -219,12 +430,15 @@ export default function Home() {
                       <TableCell>
                         <Skeleton className="h-4 w-20 bg-[#2d2d2d]" />
                       </TableCell>
+                      <TableCell>
+                        <Skeleton className="h-4 w-20 bg-[#2d2d2d]" />
+                      </TableCell>
                     </TableRow>
                   ))
                 ) : changes.length === 0 ? (
                   <TableRow className="border-[#2d2d2d]">
                     <TableCell
-                      colSpan={4}
+                      colSpan={5}
                       className="text-center text-gray-500 py-8"
                     >
                       Нет изменений в расписании
@@ -237,26 +451,121 @@ export default function Home() {
                       className="border-[#2d2d2d] hover:bg-[#252525]"
                     >
                       <TableCell className="font-medium text-white">
-                        <Badge
-                          variant="secondary"
-                          className="bg-blue-950/50 text-blue-300 border-blue-900"
-                        >
-                          {change.group_name || "—"}
-                        </Badge>
+                        {editingId === change.id ? (
+                          <Input
+                            value={editForm.group_name || ""}
+                            onChange={(e) =>
+                              setEditForm({
+                                ...editForm,
+                                group_name: e.target.value,
+                              })
+                            }
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8"
+                          />
+                        ) : (
+                          <Badge
+                            variant="secondary"
+                            className="bg-blue-950/50 text-blue-300 border-blue-900"
+                          >
+                            {change.group_name || "—"}
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell className="text-gray-300">
-                        {change.subject || "—"}
+                        {editingId === change.id ? (
+                          <Input
+                            value={editForm.subject || ""}
+                            onChange={(e) =>
+                              setEditForm({
+                                ...editForm,
+                                subject: e.target.value,
+                              })
+                            }
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8"
+                          />
+                        ) : (
+                          change.subject || "—"
+                        )}
                       </TableCell>
                       <TableCell className="text-white">
-                        <Badge
-                          variant="outline"
-                          className="border-[#2d2d2d] text-gray-300"
-                        >
-                          {change.lesson_number || "—"}
-                        </Badge>
+                        {editingId === change.id ? (
+                          <Input
+                            type="number"
+                            min={1}
+                            max={10}
+                            value={editForm.lesson_number || 1}
+                            onChange={(e) =>
+                              setEditForm({
+                                ...editForm,
+                                lesson_number: parseInt(e.target.value) || 1,
+                              })
+                            }
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8 w-16"
+                          />
+                        ) : (
+                          <Badge
+                            variant="outline"
+                            className="border-[#2d2d2d] text-gray-300"
+                          >
+                            {change.lesson_number || "—"}
+                          </Badge>
+                        )}
                       </TableCell>
                       <TableCell className="text-gray-400 text-sm">
-                        {change.day || "—"}
+                        {editingId === change.id ? (
+                          <Input
+                            value={editForm.day || ""}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, day: e.target.value })
+                            }
+                            className="bg-[#2d2d2d] border-[#3d3d3d] text-white h-8"
+                          />
+                        ) : (
+                          change.day || "—"
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-2">
+                          {editingId === change.id ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleEditSave(change.id)}
+                                className="h-8 w-8 p-0 text-green-400 hover:text-green-300 hover:bg-green-950/30"
+                              >
+                                ✓
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setEditingId(null)}
+                                className="h-8 w-8 p-0 text-gray-400 hover:text-gray-300 hover:bg-gray-800"
+                              >
+                                ✕
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleEditStart(change)}
+                                className="h-8 w-8 p-0 text-blue-400 hover:text-blue-300 hover:bg-blue-950/30"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDelete(change.id)}
+                                className="h-8 w-8 p-0 text-red-400 hover:text-red-300 hover:bg-red-950/30"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))
