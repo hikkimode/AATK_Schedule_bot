@@ -77,7 +77,9 @@ class ScheduleService:
     async def get_user_profile(self, tg_id: int) -> UserProfile | None:
         # Telegram IDs are stored as BIGINT in the DB to support values above int32 range.
         query = select(UserProfile).where(UserProfile.tg_id == tg_id)
-        return await self._session.scalar(query)
+        result = await self._session.scalar(query)
+        logger.debug(f"get_user_profile({tg_id}): found={result is not None}")
+        return result
 
     async def save_user_profile(
         self,
@@ -94,13 +96,16 @@ class ScheduleService:
                 language=language or "ru",
             )
             self._session.add(profile)
+            logger.debug(f"save_user_profile({tg_id}): created new profile")
         else:
             if group_name is not None:
                 profile.group_name = group_name
             if language is not None:
                 profile.language = language
             profile.updated_at = datetime.utcnow()
-        await self._session.flush()
+            logger.debug(f"save_user_profile({tg_id}): updated existing profile")
+        await self._session.commit()
+        logger.info(f"save_user_profile({tg_id}): committed to DB")
         return profile
 
     async def get_max_lesson_number(self) -> int:

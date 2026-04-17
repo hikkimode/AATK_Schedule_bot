@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
@@ -10,6 +11,8 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from services.audit_service import ScheduleService
 from states import StudentStates
+
+logger = logging.getLogger(__name__)
 
 
 router = Router()
@@ -277,7 +280,11 @@ async def select_group(
     group_name = callback.data.split(":", maxsplit=1)[1]
     data = await state.get_data()
     language = _resolve_language(data)
-    await schedule_service.save_user_profile(callback.from_user.id, group_name=group_name)
+    tg_id = callback.from_user.id
+    logger.info(f"Saving profile for {tg_id}: group_name={group_name}")
+    await schedule_service.save_user_profile(tg_id, group_name=group_name)
+    profile = await schedule_service.get_user_profile(tg_id)
+    logger.info(f"Profile retrieved after save: {profile}")
     await state.update_data(group_name=group_name)
     await state.set_state(StudentStates.day)
     await callback.message.edit_text(
@@ -348,12 +355,15 @@ async def student_today(
     state: FSMContext,
     schedule_service: ScheduleService,
 ) -> None:
-    data = await state.get_data()
-    language = _resolve_language(data)
-    profile = await schedule_service.get_user_profile(callback.from_user.id)
+    tg_id = callback.from_user.id
+    logger.info(f"student_today: fetching profile for {tg_id}")
+    profile = await schedule_service.get_user_profile(tg_id)
     if profile is None or not profile.group_name:
+        logger.info(f"student_today: profile not found or no group, asking to choose")
         await choose_group_callback(callback, state, schedule_service)
         return
+    language = profile.language or "ru"
+    logger.info(f"student_today: found profile with group={profile.group_name}, lang={language}")
     day = _compute_day_by_offset(0)
     lessons = await schedule_service.get_lessons(profile.group_name, day=day)
     text = _render_schedule(profile.group_name, day=day, lessons=lessons, language=language)
@@ -367,12 +377,15 @@ async def student_tomorrow(
     state: FSMContext,
     schedule_service: ScheduleService,
 ) -> None:
-    data = await state.get_data()
-    language = _resolve_language(data)
-    profile = await schedule_service.get_user_profile(callback.from_user.id)
+    tg_id = callback.from_user.id
+    logger.info(f"student_tomorrow: fetching profile for {tg_id}")
+    profile = await schedule_service.get_user_profile(tg_id)
     if profile is None or not profile.group_name:
+        logger.info(f"student_tomorrow: profile not found or no group, asking to choose")
         await choose_group_callback(callback, state, schedule_service)
         return
+    language = profile.language or "ru"
+    logger.info(f"student_tomorrow: found profile with group={profile.group_name}, lang={language}")
     day = _compute_day_by_offset(1)
     lessons = await schedule_service.get_lessons(profile.group_name, day=day)
     text = _render_schedule(profile.group_name, day=day, lessons=lessons, language=language)
