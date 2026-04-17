@@ -424,7 +424,12 @@ async def teacher_process_import_file(
     if role not in {"teacher", "superadmin"}:
         await message.answer("❌ Ой, кажется, у вас нет доступа к этому разделу")
         return
+
     document = message.document
+    if not document:
+        await message.answer("❌ Файл не найден")
+        return
+
     file_name = document.file_name or ""
     if not file_name.lower().endswith(".xlsx"):
         await message.answer("❌ Пришлите файл Excel в формате .xlsx")
@@ -435,17 +440,35 @@ async def teacher_process_import_file(
         await bot.download(document, destination=temp_path)
         report = await schedule_service.import_changes_from_excel(temp_path)
     except ValueError as error:
-        await message.answer(f"❌ {html.escape(str(error))}")
+        await message.answer(f"❌ Ошибка в данных: {html.escape(str(error))}")
+        await state.clear()
         return
-    except Exception:
-        await message.answer("❌ Не удалось обработать файл. Проверьте Excel и попробуйте снова.")
+    except Exception as error:
+        error_msg = str(error)
+        await message.answer(f"❌ Ошибка базы данных:\n<code>{html.escape(error_msg[:200])}</code>")
+        await state.clear()
         return
     finally:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
 
     await state.clear()
-    await message.answer(_import_report_text(report))
+    if report.updated_rows > 0:
+        groups_text = ", ".join(report.updated_groups) if report.updated_groups else "—"
+        await message.answer(
+            f"✅ <b>Импорт успешен</b>\n\n"
+            f"📝 Обновлено/добавлено строк: <b>{report.updated_rows}</b>\n"
+            f"👥 Группы: <b>{html.escape(groups_text)}</b>\n"
+            f"⚠️ Пропущено: <b>{report.skipped_rows}</b>"
+        )
+    else:
+        await message.answer("⚠️ Не было обновлено ни одной записи. Проверьте данные в Excel.")
+
+    if report.errors:
+        error_text = "\n".join(f"• {html.escape(e)}" for e in report.errors[:5])
+        if len(report.errors) > 5:
+            error_text += f"\n• ...и ещё {len(report.errors) - 5}"
+        await message.answer(f"📋 <b>Ошибки при импорте:</b>\n{error_text}")
 
 
 @router.message(TeacherStates.import_file)

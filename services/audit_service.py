@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Select, func, insert, select
+from sqlalchemy import Select, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AuditLog, Schedule
@@ -106,19 +107,21 @@ class ScheduleService:
             group_name = self._normalize_cell(row.get("group_name"))
             day = self._normalize_cell(row.get("day"))
             lesson_number = self._parse_lesson_number(row.get("lesson_number"))
-            subject = self._normalize_cell(row.get("subject")) or ""
-            teacher = self._normalize_cell(row.get("teacher")) or ""
-            room = self._normalize_cell(row.get("room")) or ""
-            start_time_raw = self._normalize_cell(row.get("start_time"))
-            end_time_raw = self._normalize_cell(row.get("end_time"))
 
             if not group_name or not day or lesson_number is None:
                 skipped_rows += 1
                 errors.append(f"Строка {row_number}: заполните group_name, day и lesson_number.")
                 continue
 
+            subject = self._normalize_cell(row.get("subject")) or ""
+            teacher = self._normalize_cell(row.get("teacher")) or ""
+            room = self._normalize_cell(row.get("room")) or ""
+            start_time_raw = self._normalize_cell(row.get("start_time"))
+            end_time_raw = self._normalize_cell(row.get("end_time"))
+
             start_time = self._normalize_time(start_time_raw) if start_time_raw else "00:00:00"
             end_time = self._normalize_time(end_time_raw) if end_time_raw else "00:00:00"
+
             if start_time_raw and not start_time:
                 skipped_rows += 1
                 errors.append(f"Строка {row_number}: неверный формат start_time.")
@@ -145,7 +148,7 @@ class ScheduleService:
             data_list.append(data)
 
         if data_list:
-            logger.info(f"Importing {len(data_list)} rows from Excel")
+            logger.info(f"Импорт: {len(data_list)} строк")
             stmt = insert(Schedule).values(data_list)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["group_name", "day", "lesson_number"],
@@ -161,7 +164,6 @@ class ScheduleService:
             )
             await self._session.execute(stmt)
             await self._session.commit()
-            logger.info(f"Successfully imported {len(data_list)} rows")
 
         updated_rows = len(data_list)
         updated_groups = sorted(set(d["group_name"] for d in data_list))
