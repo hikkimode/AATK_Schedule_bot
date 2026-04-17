@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError, DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from database import create_engine_and_sessionmaker
@@ -25,6 +26,16 @@ setup_logging()
 _engine = None
 _session_factory = None
 _superadmin_ids: set[int] = set()
+
+# Lesson times mapping (lesson_number -> (start_time, end_time))
+LESSON_TIMES: dict[int, tuple[str, str]] = {
+    1: ("08:30", "09:50"),
+    2: ("10:00", "11:20"),
+    3: ("11:30", "12:50"),
+    4: ("13:00", "14:20"),
+    5: ("14:30", "15:50"),
+    6: ("16:00", "17:20"),
+}
 
 
 @dataclass
@@ -211,7 +222,7 @@ app.add_middleware(
     allow_origins=["https://aatk-schedule-bot.vercel.app"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "X-Telegram-Init-Data"],
 )
 
 
@@ -263,51 +274,73 @@ async def get_bot_stats(session: AsyncSession = Depends(get_session)) -> BotStat
     return BotStatsResponse(total_users=total, active_users=active)
 
 
+def get_lesson_times(lesson_number: int) -> tuple[str | None, str | None]:
+    """Get start and end time for a lesson number."""
+    if lesson_number in LESSON_TIMES:
+        return LESSON_TIMES[lesson_number]
+    return None, None
+
+
 @app.post("/schedule/changes", response_model=ChangeResponse)
 async def create_change(
     request: ChangeCreateRequest,
     session: AsyncSession = Depends(get_session),
     user: TelegramUser = Depends(require_admin)
 ) -> ChangeResponse:
-    raw_text = request.group_name + " | " + request.day + " | " + str(request.lesson_number) + " | " + request.subject
-    if request.teacher:
-        raw_text = raw_text + " | " + request.teacher
-    if request.room:
-        raw_text = raw_text + " | " + request.room
+    try:
+        raw_text = request.group_name + " | " + request.day + " | " + str(request.lesson_number) + " | " + request.subject
+        if request.teacher:
+            raw_text = raw_text + " | " + request.teacher
+        if request.room:
+            raw_text = raw_text + " | " + request.room
 
-    new_change = Schedule(
-        group_name=request.group_name,
-        subject=request.subject,
-        day=request.day,
-        lesson_number=request.lesson_number,
-        teacher=request.teacher,
-        room=request.room,
-        raw_text=raw_text,
-        is_change=True,
-    )
-    session.add(new_change)
-    await session.commit()
-    await session.refresh(new_change)
+        # Auto-fill time based on lesson number
+        start_time, end_time = get_lesson_times(request.lesson_number)
 
-    # Log audit
-    await log_audit_action(
-        session, user, "CREATE",
-        request.group_name, request.day, request.lesson_number,
-        None, raw_text
-    )
+        new_change = Schedule(
+            group_name=request.group_name,
+            subject=request.subject,
+            day=request.day,
+            lesson_number=request.lesson_number,
+            teacher=request.teacher,
+            room=request.room,
+            start_time=start_time,
+            end_time=end_time,
+            raw_text=raw_text,
+            is_change=True,
+            updated_by=user.id,
+        )
+        session.add(new_change)
+        await session.commit()
+        await session.refresh(new_change)
 
-    return ChangeResponse(
-        id=new_change.id,
-        group_name=new_change.group_name,
-        day=new_change.day,
-        lesson_number=new_change.lesson_number,
-        subject=new_change.subject,
-        teacher=new_change.teacher,
-        room=new_change.room,
-        start_time=new_change.start_time,
-        end_time=new_change.end_time,
-        raw_text=new_change.raw_text,
-    )
+        # Log audit
+        await log_audit_action(
+            session, user, "CREATE",
+            request.group_name, request.day, request.lesson_number,
+            None, raw_text
+        )
+
+        return ChangeResponse(
+            id=new_change.id,
+            group_name=new_change.group_name,
+            day=new_change.day,
+            lesson_number=new_change.lesson_number,
+            subject=new_change.subject,
+            teacher=new_change.teacher,
+            room=new_change.room,
+            start_time=new_change.start_time,
+            end_time=new_change.end_time,
+            raw_text=new_change.raw_text,
+        )
+    except IntegrityError as e:
+        await session.rollback()
+        logger.error(f"Database integrity error: {e}")
+        raise HTTPException(status_code=400, detail="Ошибка заполнения: проверьте обязательные поля")
+    except DatabaseError as e:
+        await session.rollback()
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка базы данных. Попробуйте позже.")
 
 
 @app.patch("/schedule/changes/{change_id}", response_model=ChangeResponse)
@@ -317,43 +350,65 @@ async def update_change(
     session: AsyncSession = Depends(get_session),
     user: TelegramUser = Depends(require_admin)
 ) -> ChangeResponse:
-    query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
-    result = await session.execute(query)
-    change = result.scalar_one_or_none()
+    try:
+        query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
+        result = await session.execute(query)
+        change = result.scalar_one_or_none()
 
-    if change is None:
-        raise HTTPException(status_code=404, detail="Change not found")
+        if change is None:
+            raise HTTPException(status_code=404, detail="Change not found")
 
-    # Store old value for audit
-    old_value = change.raw_text
+        # Store old value for audit
+        old_value = change.raw_text
 
-    update_data = request.model_dump(exclude_unset=True)
+        update_data = request.model_dump(exclude_unset=True)
 
-    if update_data:
-        stmt = update(Schedule).where(Schedule.id == change_id).values(**update_data)
-        await session.execute(stmt)
-        await session.commit()
-        await session.refresh(change)
+        # Auto-fill time if lesson_number is being updated
+        if "lesson_number" in update_data and update_data["lesson_number"]:
+            lesson_num = update_data["lesson_number"]
+            start_time, end_time = get_lesson_times(lesson_num)
+            # Only update time if current time is empty or we're explicitly changing it
+            if not update_data.get("start_time") and start_time:
+                update_data["start_time"] = start_time
+            if not update_data.get("end_time") and end_time:
+                update_data["end_time"] = end_time
 
-        # Log audit
-        await log_audit_action(
-            session, user, "UPDATE",
-            change.group_name or "", change.day or "", change.lesson_number or 0,
-            old_value, change.raw_text
+        # Always set updated_by
+        update_data["updated_by"] = user.id
+
+        if update_data:
+            stmt = update(Schedule).where(Schedule.id == change_id).values(**update_data)
+            await session.execute(stmt)
+            await session.commit()
+            await session.refresh(change)
+
+            # Log audit
+            await log_audit_action(
+                session, user, "UPDATE",
+                change.group_name or "", change.day or "", change.lesson_number or 0,
+                old_value, change.raw_text
+            )
+
+        return ChangeResponse(
+            id=change.id,
+            group_name=change.group_name,
+            day=change.day,
+            lesson_number=change.lesson_number,
+            subject=change.subject,
+            teacher=change.teacher,
+            room=change.room,
+            start_time=change.start_time,
+            end_time=change.end_time,
+            raw_text=change.raw_text,
         )
-
-    return ChangeResponse(
-        id=change.id,
-        group_name=change.group_name,
-        day=change.day,
-        lesson_number=change.lesson_number,
-        subject=change.subject,
-        teacher=change.teacher,
-        room=change.room,
-        start_time=change.start_time,
-        end_time=change.end_time,
-        raw_text=change.raw_text,
-    )
+    except IntegrityError as e:
+        await session.rollback()
+        logger.error(f"Database integrity error: {e}")
+        raise HTTPException(status_code=400, detail="Ошибка заполнения: проверьте обязательные поля")
+    except DatabaseError as e:
+        await session.rollback()
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка базы данных. Попробуйте позже.")
 
 
 @app.delete("/schedule/changes/{change_id}")
@@ -362,30 +417,39 @@ async def delete_change(
     session: AsyncSession = Depends(get_session),
     user: TelegramUser = Depends(require_admin)
 ) -> dict[str, str]:
-    query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
-    result = await session.execute(query)
-    change = result.scalar_one_or_none()
+    try:
+        query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
+        result = await session.execute(query)
+        change = result.scalar_one_or_none()
 
-    if change is None:
-        raise HTTPException(status_code=404, detail="Change not found")
+        if change is None:
+            raise HTTPException(status_code=404, detail="Change not found")
 
-    # Store data for audit
-    group_name = change.group_name or ""
-    day = change.day or ""
-    lesson_num = change.lesson_number or 0
-    old_value = change.raw_text
+        # Store data for audit
+        group_name = change.group_name or ""
+        day = change.day or ""
+        lesson_num = change.lesson_number or 0
+        old_value = change.raw_text
 
-    await session.delete(change)
-    await session.commit()
+        await session.delete(change)
+        await session.commit()
 
-    # Log audit
-    await log_audit_action(
-        session, user, "DELETE",
-        group_name, day, lesson_num,
-        old_value, None
-    )
+        # Log audit
+        await log_audit_action(
+            session, user, "DELETE",
+            group_name, day, lesson_num,
+            old_value, None
+        )
 
-    return {"message": "Change deleted successfully"}
+        return {"message": "Change deleted successfully"}
+    except IntegrityError as e:
+        await session.rollback()
+        logger.error(f"Database integrity error: {e}")
+        raise HTTPException(status_code=400, detail="Ошибка удаления: запись используется в других данных")
+    except DatabaseError as e:
+        await session.rollback()
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка базы данных. Попробуйте позже.")
 
 
 @app.delete("/schedule/changes/clear-all")
@@ -393,15 +457,24 @@ async def clear_all_changes(
     session: AsyncSession = Depends(get_session),
     user: TelegramUser = Depends(require_admin)
 ) -> dict[str, str]:
-    stmt = delete(Schedule).where(Schedule.is_change == True)
-    result = await session.execute(stmt)
-    await session.commit()
+    try:
+        stmt = delete(Schedule).where(Schedule.is_change == True)
+        result = await session.execute(stmt)
+        await session.commit()
 
-    # Log audit
-    await log_audit_action(
-        session, user, "CLEAR_ALL",
-        "ALL", "ALL", 0,
-        "All changes", "Cleared"
-    )
+        # Log audit
+        await log_audit_action(
+            session, user, "CLEAR_ALL",
+            "ALL", "ALL", 0,
+            "All changes", "Cleared"
+        )
 
-    return {"message": "All changes cleared", "deleted_count": str(result.rowcount)}
+        return {"message": "All changes cleared", "deleted_count": str(result.rowcount)}
+    except IntegrityError as e:
+        await session.rollback()
+        logger.error(f"Database integrity error: {e}")
+        raise HTTPException(status_code=400, detail="Ошибка очистки: невозможно удалить некоторые записи")
+    except DatabaseError as e:
+        await session.rollback()
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка базы данных. Попробуйте позже.")
