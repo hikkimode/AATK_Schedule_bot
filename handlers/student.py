@@ -111,6 +111,18 @@ def _resolve_language(data: dict[str, str]) -> str:
     return data.get("language", "ru")
 
 
+def _format_time(value: str | None) -> str:
+    if not value:
+        return "—"
+    text = str(value).strip()
+    if not text:
+        return "—"
+    parts = text.split(":")
+    if len(parts) >= 2:
+        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}"
+    return text
+
+
 def _render_schedule(group_name: str, day: str, lessons: list, language: str) -> str:
     texts = TEXTS[language]
     day_label = DAY_LABELS[language].get(day, day)
@@ -125,9 +137,11 @@ def _render_schedule(group_name: str, day: str, lessons: list, language: str) ->
         return "\n".join(lines)
     for lesson in lessons:
         status = f"\n⚠️ <b>{texts['changed']}</b>" if lesson.is_change else ""
+        start_time = _format_time(lesson.start_time)
+        end_time = _format_time(lesson.end_time)
         lines.extend(
             [
-                f"🔹 <b>{lesson.lesson_number}-пара</b>  {html.escape(lesson.start_time or '—')} - {html.escape(lesson.end_time or '—')}",
+                f"🔹 <b>{lesson.lesson_number}-пара</b>  {html.escape(start_time)} - {html.escape(end_time)}",
                 f"📘 <b>{texts['subject']}:</b> {html.escape(lesson.subject or '—')}",
                 f"👩‍🏫 <b>{texts['teacher']}:</b> {html.escape(lesson.teacher or '—')}",
                 f"🏫 <b>{texts['room']}:</b> {html.escape(lesson.room or '—')}{status}",
