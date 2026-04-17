@@ -114,6 +114,11 @@ def _resolve_language(data: dict[str, str]) -> str:
 def _format_time(value: str | None) -> str:
     if not value:
         return "—"
+    if hasattr(value, "strftime"):
+        try:
+            return value.strftime("%H:%M")
+        except Exception:
+            pass
     text = str(value).strip()
     if not text:
         return "—"
