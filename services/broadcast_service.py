@@ -1,23 +1,18 @@
-"""
-Broadcast notification service for schedule changes.
-Sends localized notifications to users when their group's schedule changes.
-"""
-
 from __future__ import annotations
 
 import asyncio
 import html
-import logging
 from datetime import datetime
+from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from loguru import logger
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locales import get_text
 from models import Schedule, UserProfile
-
-logger = logging.getLogger(__name__)
 
 
 class BroadcastService:
@@ -33,37 +28,23 @@ class BroadcastService:
         group_name: str,
         day: str,
         changes: list[Schedule],
-    ) -> dict[str, int]:
-        """
-        Broadcast notifications about schedule changes to all users in a group.
-        
-        Args:
-            session: AsyncSession for DB queries
-            group_name: The group affected by changes
-            day: The day of the week with changes
-            changes: List of Schedule objects that were changed
-        
-        Returns:
-            dict with keys 'sent' and 'failed' for metrics
-        """
-        # Fetch all users subscribed to this group
-        from sqlalchemy import select
-        
-        query = select(UserProfile).where(UserProfile.group_name == group_name)
+    ) -> dict[str, Any]:
+        query = select(UserProfile).where(
+            UserProfile.group_name == group_name,
+            UserProfile.is_active == True,
+        )
         result = await session.scalars(query)
         users = list(result)
-        
-        metrics = {"sent": 0, "failed": 0}
-        
-        # Group changes by language to aggregate messages
-        messages_by_language: dict[str, list[dict]] = {}
+
+        metrics: dict[str, Any] = {"sent": 0, "failed": 0, "deactivated": 0}
+
+        messages_by_language: dict[str, list[UserProfile]] = {}
         for user in users:
             language = user.language or "ru"
             if language not in messages_by_language:
                 messages_by_language[language] = []
             messages_by_language[language].append(user)
-        
-        # Send aggregated message per language group
+
         for language, language_users in messages_by_language.items():
             message = self._build_change_notification(
                 group_name=group_name,
@@ -71,24 +52,28 @@ class BroadcastService:
                 changes=changes,
                 language=language,
             )
-            
+
             for user in language_users:
                 try:
                     await self._send_with_retry(user.tg_id, message)
                     metrics["sent"] += 1
-                    logger.debug(f"Sent notification to {user.tg_id}")
+                    logger.debug("Sent notification to " + str(user.tg_id))
                 except TelegramForbiddenError:
                     metrics["failed"] += 1
-                    logger.warning(f"User {user.tg_id} blocked the bot or deleted account")
+                    metrics["deactivated"] += 1
+                    user.is_active = False
+                    await session.flush()
+                    logger.warning("User " + str(user.tg_id) + " blocked the bot, deactivated")
                 except TelegramRetryAfter as e:
                     metrics["failed"] += 1
-                    logger.warning(f"Flood limit for {user.tg_id}, retry after {e.retry_after}s")
+                    logger.warning("Flood limit for " + str(user.tg_id) + ", retry after " + str(e.retry_after) + "s")
                     await asyncio.sleep(e.retry_after)
                 except Exception as e:
                     metrics["failed"] += 1
-                    logger.error(f"Failed to notify {user.tg_id}: {e}")
-        
-        logger.info(f"Broadcast for group={group_name}, day={day}: Sent={metrics['sent']}, Failed={metrics['failed']}")
+                    logger.error("Failed to notify " + str(user.tg_id) + ": " + str(e))
+
+        await session.commit()
+        logger.info("Broadcast for group=" + group_name + ", day=" + day + ": Sent=" + str(metrics["sent"]) + ", Failed=" + str(metrics["failed"]) + ", Deactivated=" + str(metrics["deactivated"]))
 
         admin_message = self._build_admin_monitor_message(
             group_name=group_name,
@@ -116,16 +101,17 @@ class BroadcastService:
                 logger.warning(f"Failed to notify admin {admin_id}: {exc}")
 
     async def _send_with_retry(self, chat_id: int, text: str, max_attempts: int = 3) -> None:
-        """Send message with exponential backoff retry."""
         for attempt in range(1, max_attempts + 1):
             try:
                 await self._bot.send_message(chat_id=chat_id, text=text)
                 return
+            except TelegramForbiddenError:
+                raise
             except Exception as error:
                 if attempt >= max_attempts:
                     raise
-                logger.debug(f"Send attempt {attempt}/{max_attempts} failed for {chat_id}: {error}")
-                await asyncio.sleep(attempt)  # Exponential backoff
+                logger.debug("Send attempt " + str(attempt) + "/" + str(max_attempts) + " failed for " + str(chat_id) + ": " + str(error))
+                await asyncio.sleep(attempt)
 
     def _build_admin_monitor_message(
         self,

@@ -68,8 +68,8 @@ class AuditLog(Base):
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
-    # Telegram IDs may exceed signed 32-bit range, so use BIGINT for tg_id.
     tg_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str] = mapped_column(Text, nullable=False, default="ru", server_default="ru")
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
