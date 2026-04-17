@@ -1,22 +1,155 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import os
+import urllib.parse
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
-from fastapi import Depends, FastAPI, HTTPException, Path
+from fastapi import Depends, FastAPI, HTTPException, Header, Path
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from database import create_engine_and_sessionmaker
-from models import Schedule, UserProfile
+from models import AuditLog, Schedule, UserProfile
 from utils.exceptions import setup_logging
 
 setup_logging()
 
 _engine = None
 _session_factory = None
+_superadmin_ids: set[int] = set()
+
+
+@dataclass
+class TelegramUser:
+    id: int
+    first_name: str
+    last_name: str | None = None
+    username: str | None = None
+    language_code: str | None = None
+
+
+def init_superadmin_ids(ids: list[int]) -> None:
+    global _superadmin_ids
+    _superadmin_ids = set(ids)
+
+
+def verify_telegram_auth(init_data: str) -> TelegramUser | None:
+    """Verify Telegram WebApp initData using HMAC-SHA256."""
+    bot_token = os.getenv("BOT_TOKEN", "")
+    if not bot_token:
+        logger.error("BOT_TOKEN not set")
+        return None
+
+    try:
+        # Parse init_data
+        parsed = urllib.parse.parse_qs(init_data)
+        hash_value = parsed.get("hash", [""])[0]
+        if not hash_value:
+            return None
+
+        # Create data_check_string (sorted key=value pairs, separated by \n)
+        data_pairs = []
+        for key, values in parsed.items():
+            if key != "hash":
+                data_pairs.append((key, values[0]))
+        data_pairs.sort(key=lambda x: x[0])
+        data_check_string = "\n".join(f"{k}={v}" for k, v in data_pairs)
+
+        # Generate secret key from bot token
+        secret_key = hmac.new(
+            key=b"WebAppData",
+            msg=bot_token.encode(),
+            digestmod=hashlib.sha256
+        ).digest()
+
+        # Calculate HMAC
+        calculated_hash = hmac.new(
+            key=secret_key,
+            msg=data_check_string.encode(),
+            digestmod=hashlib.sha256
+        ).hexdigest()
+
+        if calculated_hash != hash_value:
+            logger.warning("Invalid initData hash")
+            return None
+
+        # Parse user data
+        user_json = parsed.get("user", ["{}"])[0]
+        user_data = json.loads(user_json)
+
+        return TelegramUser(
+            id=user_data.get("id", 0),
+            first_name=user_data.get("first_name", ""),
+            last_name=user_data.get("last_name"),
+            username=user_data.get("username"),
+            language_code=user_data.get("language_code"),
+        )
+    except Exception as e:
+        logger.error("Error verifying Telegram auth: " + str(e))
+        return None
+
+
+async def get_current_user(
+    authorization: str = Header(None, alias="Authorization")
+) -> TelegramUser:
+    """Dependency to get current authenticated user."""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+
+    # Expected format: "tma <initData>"
+    parts = authorization.split(" ")
+    if len(parts) != 2 or parts[0] != "tma":
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+
+    user = verify_telegram_auth(parts[1])
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid Telegram authentication")
+
+    return user
+
+
+def require_admin(user: TelegramUser = Depends(get_current_user)) -> TelegramUser:
+    """Dependency to require admin privileges."""
+    if user.id not in _superadmin_ids:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+async def log_audit_action(
+    session: AsyncSession,
+    user: TelegramUser,
+    action: str,
+    group_name: str,
+    day: str,
+    lesson_num: int,
+    old_value: str | None = None,
+    new_value: str | None = None,
+) -> None:
+    """Log an audit action to the database."""
+    full_name = user.first_name
+    if user.last_name:
+        full_name = full_name + " " + user.last_name
+
+    audit_log = AuditLog(
+        tg_id=user.id,
+        full_name=full_name,
+        action=action,
+        group_name=group_name,
+        day=day,
+        lesson_num=lesson_num,
+        old_value=old_value,
+        new_value=new_value,
+    )
+    session.add(audit_log)
+    await session.commit()
 
 
 class ChangeResponse(BaseModel):
@@ -61,10 +194,11 @@ class StatusResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[Any, None]:
-    global _engine, _session_factory
+    global _engine, _session_factory, _superadmin_ids
     from config import load_config
     config = load_config()
     _engine, _session_factory = create_engine_and_sessionmaker(config.database_url)
+    init_superadmin_ids(config.superadmin_ids)
     yield
     if _engine:
         await _engine.dispose()
@@ -132,7 +266,8 @@ async def get_bot_stats(session: AsyncSession = Depends(get_session)) -> BotStat
 @app.post("/schedule/changes", response_model=ChangeResponse)
 async def create_change(
     request: ChangeCreateRequest,
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
+    user: TelegramUser = Depends(require_admin)
 ) -> ChangeResponse:
     raw_text = request.group_name + " | " + request.day + " | " + str(request.lesson_number) + " | " + request.subject
     if request.teacher:
@@ -154,6 +289,13 @@ async def create_change(
     await session.commit()
     await session.refresh(new_change)
 
+    # Log audit
+    await log_audit_action(
+        session, user, "CREATE",
+        request.group_name, request.day, request.lesson_number,
+        None, raw_text
+    )
+
     return ChangeResponse(
         id=new_change.id,
         group_name=new_change.group_name,
@@ -172,7 +314,8 @@ async def create_change(
 async def update_change(
     change_id: int = Path(..., ge=1),
     request: ChangeUpdateRequest = Depends(),
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
+    user: TelegramUser = Depends(require_admin)
 ) -> ChangeResponse:
     query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
     result = await session.execute(query)
@@ -181,6 +324,9 @@ async def update_change(
     if change is None:
         raise HTTPException(status_code=404, detail="Change not found")
 
+    # Store old value for audit
+    old_value = change.raw_text
+
     update_data = request.model_dump(exclude_unset=True)
 
     if update_data:
@@ -188,6 +334,13 @@ async def update_change(
         await session.execute(stmt)
         await session.commit()
         await session.refresh(change)
+
+        # Log audit
+        await log_audit_action(
+            session, user, "UPDATE",
+            change.group_name or "", change.day or "", change.lesson_number or 0,
+            old_value, change.raw_text
+        )
 
     return ChangeResponse(
         id=change.id,
@@ -206,7 +359,8 @@ async def update_change(
 @app.delete("/schedule/changes/{change_id}")
 async def delete_change(
     change_id: int = Path(..., ge=1),
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_session),
+    user: TelegramUser = Depends(require_admin)
 ) -> dict[str, str]:
     query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
     result = await session.execute(query)
@@ -215,16 +369,39 @@ async def delete_change(
     if change is None:
         raise HTTPException(status_code=404, detail="Change not found")
 
+    # Store data for audit
+    group_name = change.group_name or ""
+    day = change.day or ""
+    lesson_num = change.lesson_number or 0
+    old_value = change.raw_text
+
     await session.delete(change)
     await session.commit()
+
+    # Log audit
+    await log_audit_action(
+        session, user, "DELETE",
+        group_name, day, lesson_num,
+        old_value, None
+    )
 
     return {"message": "Change deleted successfully"}
 
 
 @app.delete("/schedule/changes/clear-all")
-async def clear_all_changes(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
+async def clear_all_changes(
+    session: AsyncSession = Depends(get_session),
+    user: TelegramUser = Depends(require_admin)
+) -> dict[str, str]:
     stmt = delete(Schedule).where(Schedule.is_change == True)
     result = await session.execute(stmt)
     await session.commit()
+
+    # Log audit
+    await log_audit_action(
+        session, user, "CLEAR_ALL",
+        "ALL", "ALL", 0,
+        "All changes", "Cleared"
+    )
 
     return {"message": "All changes cleared", "deleted_count": str(result.rowcount)}

@@ -70,6 +70,10 @@ const API_BASE_URL = "https://aatk-schedule-bot.onrender.com";
 
 export default function Home() {
   const [userName, setUserName] = useState<string>("");
+  const [userId, setUserId] = useState<number | null>(null);
+  const [initData, setInitData] = useState<string>("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isInTelegram, setIsInTelegram] = useState(true);
   const [stats, setStats] = useState<BotStats | null>(null);
   const [changes, setChanges] = useState<ScheduleChange[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
@@ -87,11 +91,22 @@ export default function Home() {
     room: "",
   });
 
+  // List of admin IDs (should match config.superadmin_ids in backend)
+  const ADMIN_IDS = [123456789]; // Replace with actual admin IDs
+
   useEffect(() => {
-    if (typeof window !== "undefined" && window.Telegram?.WebApp) {
+    if (typeof window !== "undefined") {
+      if (!window.Telegram?.WebApp) {
+        setIsInTelegram(false);
+        return;
+      }
+
       const tg = window.Telegram.WebApp;
       tg.ready();
       tg.expand();
+
+      // Store initData for API calls
+      setInitData(tg.initData || "");
 
       const user = tg.initDataUnsafe?.user;
       if (user) {
@@ -99,9 +114,19 @@ export default function Home() {
           .filter(Boolean)
           .join(" ");
         setUserName(fullName);
+        setUserId(user.id);
+        setIsAdmin(ADMIN_IDS.includes(user.id));
       }
     }
   }, []);
+
+  const getAuthHeaders = () => {
+    if (!initData) return {};
+    return {
+      "Authorization": `tma ${initData}`,
+      "Content-Type": "application/json",
+    };
+  };
 
   const fetchData = useCallback(async () => {
     setLoadingStats(true);
@@ -109,9 +134,10 @@ export default function Home() {
     setError(null);
 
     try {
+      const headers = getAuthHeaders();
       const [statsRes, changesRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/bot/stats`),
-        fetch(`${API_BASE_URL}/schedule/changes`),
+        fetch(`${API_BASE_URL}/bot/stats`, { headers }),
+        fetch(`${API_BASE_URL}/schedule/changes`, { headers }),
       ]);
 
       if (!statsRes.ok) {
@@ -132,20 +158,28 @@ export default function Home() {
       setLoadingStats(false);
       setLoadingChanges(false);
     }
-  }, []);
+  }, [initData]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
   const handleDelete = async (id: number) => {
+    if (!isAdmin) {
+      setError("Только администраторы могут удалять записи");
+      return;
+    }
     if (!window.confirm("Вы уверены, что хотите удалить эту замену?")) return;
 
     try {
       const res = await fetch(`${API_BASE_URL}/schedule/changes/${id}`, {
         method: "DELETE",
+        headers: getAuthHeaders(),
       });
-      if (!res.ok) throw new Error("Failed to delete: " + res.status);
+      if (!res.ok) {
+        if (res.status === 403) throw new Error("Доступ запрещен: требуются права администратора");
+        throw new Error("Failed to delete: " + res.status);
+      }
       await fetchData();
     } catch (err) {
       console.error("Delete error:", err);
@@ -154,13 +188,21 @@ export default function Home() {
   };
 
   const handleClearAll = async () => {
+    if (!isAdmin) {
+      setError("Только администраторы могут очищать замены");
+      return;
+    }
     if (!window.confirm("Вы уверены, что хотите удалить ВСЕ замены? Это действие нельзя отменить!")) return;
 
     try {
       const res = await fetch(`${API_BASE_URL}/schedule/changes/clear-all`, {
         method: "DELETE",
+        headers: getAuthHeaders(),
       });
-      if (!res.ok) throw new Error("Failed to clear all: " + res.status);
+      if (!res.ok) {
+        if (res.status === 403) throw new Error("Доступ запрещен: требуются права администратора");
+        throw new Error("Failed to clear all: " + res.status);
+      }
       await fetchData();
     } catch (err) {
       console.error("Clear all error:", err);
@@ -174,13 +216,20 @@ export default function Home() {
   };
 
   const handleEditSave = async (id: number) => {
+    if (!isAdmin) {
+      setError("Только администраторы могут редактировать записи");
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE_URL}/schedule/changes/${id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: getAuthHeaders(),
         body: JSON.stringify(editForm),
       });
-      if (!res.ok) throw new Error("Failed to update: " + res.status);
+      if (!res.ok) {
+        if (res.status === 403) throw new Error("Доступ запрещен: требуются права администратора");
+        throw new Error("Failed to update: " + res.status);
+      }
       setEditingId(null);
       await fetchData();
     } catch (err) {
@@ -190,13 +239,20 @@ export default function Home() {
   };
 
   const handleAdd = async () => {
+    if (!isAdmin) {
+      setError("Только администраторы могут добавлять записи");
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE_URL}/schedule/changes`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getAuthHeaders(),
         body: JSON.stringify(newChange),
       });
-      if (!res.ok) throw new Error("Failed to create: " + res.status);
+      if (!res.ok) {
+        if (res.status === 403) throw new Error("Доступ запрещен: требуются права администратора");
+        throw new Error("Failed to create: " + res.status);
+      }
       setIsAddDialogOpen(false);
       setNewChange({
         group_name: "",
@@ -212,6 +268,28 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "Create failed");
     }
   };
+
+  if (!isInTelegram) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-[#0f0f0f]">
+        <Card className="bg-[#1a1a1a] border-[#2d2d2d] max-w-md w-full">
+          <CardHeader>
+            <CardTitle className="text-xl font-semibold text-white text-center">
+              Доступ ограничен
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-center">
+            <p className="text-gray-400 mb-4">
+              Это приложение работает только внутри Telegram WebApp.
+            </p>
+            <p className="text-gray-500 text-sm">
+              Пожалуйста, откройте бота через Telegram.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col min-h-full p-4 gap-4">
@@ -287,119 +365,123 @@ export default function Home() {
             Изменения расписания
           </CardTitle>
           <div className="flex gap-2">
-            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-              <DialogTrigger asChild>
-                <Button
-                  size="sm"
-                  className="bg-blue-600 hover:bg-blue-700 text-white"
-                >
-                  <Plus className="h-4 w-4 mr-1" />
-                  Добавить
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="bg-[#1a1a1a] border-[#2d2d2d] text-white">
-                <DialogHeader>
-                  <DialogTitle>Добавить новую замену</DialogTitle>
-                </DialogHeader>
-                <div className="grid gap-4 py-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="group">Группа</Label>
-                    <Input
-                      id="group"
-                      value={newChange.group_name || ""}
-                      onChange={(e) =>
-                        setNewChange({ ...newChange, group_name: e.target.value })
-                      }
-                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                      placeholder="Например: ИС-101"
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="subject">Предмет</Label>
-                    <Input
-                      id="subject"
-                      value={newChange.subject || ""}
-                      onChange={(e) =>
-                        setNewChange({ ...newChange, subject: e.target.value })
-                      }
-                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                      placeholder="Например: Математика"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="grid gap-2">
-                      <Label htmlFor="day">День</Label>
-                      <Input
-                        id="day"
-                        value={newChange.day || ""}
-                        onChange={(e) =>
-                          setNewChange({ ...newChange, day: e.target.value })
-                        }
-                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                        placeholder="Понедельник"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="lesson">Пара №</Label>
-                      <Input
-                        id="lesson"
-                        type="number"
-                        min={1}
-                        max={10}
-                        value={newChange.lesson_number || 1}
-                        onChange={(e) =>
-                          setNewChange({
-                            ...newChange,
-                            lesson_number: parseInt(e.target.value) || 1,
-                          })
-                        }
-                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                      />
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="teacher">Преподаватель</Label>
-                    <Input
-                      id="teacher"
-                      value={newChange.teacher || ""}
-                      onChange={(e) =>
-                        setNewChange({ ...newChange, teacher: e.target.value })
-                      }
-                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                      placeholder="Иванов И.И."
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="room">Аудитория</Label>
-                    <Input
-                      id="room"
-                      value={newChange.room || ""}
-                      onChange={(e) =>
-                        setNewChange({ ...newChange, room: e.target.value })
-                      }
-                      className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
-                      placeholder="305"
-                    />
-                  </div>
+            {isAdmin && (
+              <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+                <DialogTrigger asChild>
                   <Button
-                    onClick={handleAdd}
-                    className="bg-green-600 hover:bg-green-700 text-white mt-2"
+                    size="sm"
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
                   >
-                    Сохранить
+                    <Plus className="h-4 w-4 mr-1" />
+                    Добавить
                   </Button>
-                </div>
-              </DialogContent>
-            </Dialog>
+                </DialogTrigger>
+                <DialogContent className="bg-[#1a1a1a] border-[#2d2d2d] text-white">
+                  <DialogHeader>
+                    <DialogTitle>Добавить новую замену</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-4 py-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="group">Группа</Label>
+                      <Input
+                        id="group"
+                        value={newChange.group_name || ""}
+                        onChange={(e) =>
+                          setNewChange({ ...newChange, group_name: e.target.value })
+                        }
+                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                        placeholder="Например: ИС-101"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="subject">Предмет</Label>
+                      <Input
+                        id="subject"
+                        value={newChange.subject || ""}
+                        onChange={(e) =>
+                          setNewChange({ ...newChange, subject: e.target.value })
+                        }
+                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                        placeholder="Например: Математика"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="day">День</Label>
+                        <Input
+                          id="day"
+                          value={newChange.day || ""}
+                          onChange={(e) =>
+                            setNewChange({ ...newChange, day: e.target.value })
+                          }
+                          className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                          placeholder="Понедельник"
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="lesson">Пара №</Label>
+                        <Input
+                          id="lesson"
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={newChange.lesson_number || 1}
+                          onChange={(e) =>
+                            setNewChange({
+                              ...newChange,
+                              lesson_number: parseInt(e.target.value) || 1,
+                            })
+                          }
+                          className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="teacher">Преподаватель</Label>
+                      <Input
+                        id="teacher"
+                        value={newChange.teacher || ""}
+                        onChange={(e) =>
+                          setNewChange({ ...newChange, teacher: e.target.value })
+                        }
+                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                        placeholder="Иванов И.И."
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="room">Аудитория</Label>
+                      <Input
+                        id="room"
+                        value={newChange.room || ""}
+                        onChange={(e) =>
+                          setNewChange({ ...newChange, room: e.target.value })
+                        }
+                        className="bg-[#2d2d2d] border-[#3d3d3d] text-white"
+                        placeholder="305"
+                      />
+                    </div>
+                    <Button
+                      onClick={handleAdd}
+                      className="bg-green-600 hover:bg-green-700 text-white mt-2"
+                    >
+                      Сохранить
+                    </Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            )}
 
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={handleClearAll}
-              className="bg-red-600/80 hover:bg-red-700 text-white"
-            >
-              <AlertTriangle className="h-4 w-4 mr-1" />
-              Очистить неделю
-            </Button>
+            {isAdmin && (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleClearAll}
+                className="bg-red-600/80 hover:bg-red-700 text-white"
+              >
+                <AlertTriangle className="h-4 w-4 mr-1" />
+                Очистить неделю
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -555,14 +637,16 @@ export default function Home() {
                               >
                                 <Pencil className="h-4 w-4" />
                               </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => handleDelete(change.id)}
-                                className="h-8 w-8 p-0 text-red-400 hover:text-red-300 hover:bg-red-950/30"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              {isAdmin && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleDelete(change.id)}
+                                  className="h-8 w-8 p-0 text-red-400 hover:text-red-300 hover:bg-red-950/30"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
                             </>
                           )}
                         </div>
