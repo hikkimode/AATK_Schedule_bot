@@ -8,7 +8,6 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, KeyboardButton, ReplyKeyboardMarkup
-from aiohttp import web
 from loguru import logger
 from uvicorn import Config, Server
 
@@ -46,25 +45,7 @@ async def set_commands(bot: Bot) -> None:
     )
 
 
-async def healthcheck(_: web.Request) -> web.Response:
-    return web.Response(text="ok")
-
-
-async def start_healthcheck_server() -> tuple[web.AppRunner, web.TCPSite]:
-    app = web.Application()
-    app.router.add_get("/", healthcheck)
-    app.router.add_get("/health", healthcheck)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", "10000"))
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
-    await site.start()
-    return runner, site
-
-
 async def run_bot(config, session_factory, engine) -> None:
-    healthcheck_runner, _ = await start_healthcheck_server()
-
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     storage = MemoryStorage()
     dispatcher = Dispatcher(storage=storage)
@@ -86,11 +67,10 @@ async def run_bot(config, session_factory, engine) -> None:
         await dispatcher.start_polling(bot)
     finally:
         await bot.session.close()
-        await healthcheck_runner.cleanup()
 
 
 async def run_api() -> None:
-    port = int(os.getenv("API_PORT", "8000"))
+    port = int(os.getenv("PORT", "10000"))
     config_uvicorn = Config(app=api_app, host="0.0.0.0", port=port, log_level="info")
     server = Server(config_uvicorn)
     logger.info("API server started on port " + str(port))
