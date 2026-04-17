@@ -13,7 +13,8 @@ from fastapi import Depends, FastAPI, HTTPException, Header, Path
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -319,7 +320,9 @@ async def create_change(
         # Auto-fill time based on lesson number
         start_time, end_time = get_lesson_times(request.lesson_number)
 
-        new_change = Schedule(
+        # Build insert statement with upsert on conflict
+        # If unique_lesson_idx conflict (group_name, day, lesson_number), update existing record
+        insert_stmt = pg_insert(Schedule).values(
             group_name=request.group_name,
             subject=request.subject,
             day=request.day,
@@ -330,31 +333,56 @@ async def create_change(
             end_time=end_time,
             raw_text=raw_text,
             is_change=True,
-            is_published=False,  # New changes are drafts by default
+            is_published=False,  # Reset to draft on conflict
             updated_by=user.id,
+        ).on_conflict_do_update(
+            index_elements=["group_name", "day", "lesson_number"],  # Matches unique_lesson_idx
+            set_={
+                "subject": request.subject,
+                "teacher": request.teacher,
+                "room": request.room,
+                "start_time": start_time,
+                "end_time": end_time,
+                "raw_text": raw_text,
+                "is_change": True,
+                "is_published": False,  # Reset to draft on update
+                "updated_by": user.id,
+            }
         )
-        session.add(new_change)
-        await session.commit()
-        await session.refresh(new_change)
 
-        # Log audit
+        result = await session.execute(insert_stmt)
+        await session.commit()
+
+        # Get the inserted/updated record
+        # Fetch the record by unique key to return it
+        query = select(Schedule).where(
+            Schedule.group_name == request.group_name,
+            Schedule.day == request.day,
+            Schedule.lesson_number == request.lesson_number
+        )
+        result = await session.execute(query)
+        change = result.scalar_one()
+
+        # Log audit (differentiate between create and update)
+        action = "UPSERT"  # Could be CREATE or UPDATE depending on conflict
         await log_audit_action(
-            session, user, "CREATE",
+            session, user, action,
             request.group_name, request.day, request.lesson_number,
             None, raw_text
         )
 
         return ChangeResponse(
-            id=new_change.id,
-            group_name=new_change.group_name,
-            day=new_change.day,
-            lesson_number=new_change.lesson_number,
-            subject=new_change.subject,
-            teacher=new_change.teacher,
-            room=new_change.room,
-            start_time=new_change.start_time,
-            end_time=new_change.end_time,
-            raw_text=new_change.raw_text,
+            id=change.id,
+            group_name=change.group_name,
+            day=change.day,
+            lesson_number=change.lesson_number,
+            subject=change.subject,
+            teacher=change.teacher,
+            room=change.room,
+            start_time=change.start_time,
+            end_time=change.end_time,
+            raw_text=change.raw_text,
+            is_published=change.is_published,
         )
     except IntegrityError as e:
         await session.rollback()
