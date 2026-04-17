@@ -420,6 +420,8 @@ async def teacher_process_import_file(
     role: str,
     bot: Bot,
     schedule_service: ScheduleService,
+    broadcast_service,
+    session,
 ) -> None:
     if role not in {"teacher", "superadmin"}:
         await message.answer("❌ Ой, кажется, у вас нет доступа к этому разделу")
@@ -461,6 +463,35 @@ async def teacher_process_import_file(
             f"👥 Группы: <b>{html.escape(groups_text)}</b>\n"
             f"⚠️ Пропущено: <b>{report.skipped_rows}</b>"
         )
+        
+        # Broadcast notifications for each group that has changes
+        import asyncio
+        broadcast_tasks = []
+        for group_name in report.updated_groups:
+            # Query all days for this group and get lessons marked as changed
+            days = await schedule_service.list_days(group_name=group_name)
+            for day in days:
+                lessons = await schedule_service.get_lessons(group_name, day)
+                changed_lessons = [l for l in lessons if l.is_change]
+                if changed_lessons:
+                    task = broadcast_service.broadcast_schedule_changes(
+                        session=session,
+                        group_name=group_name,
+                        day=day,
+                        changes=changed_lessons,
+                    )
+                    broadcast_tasks.append(task)
+        
+        if broadcast_tasks:
+            results = await asyncio.gather(*broadcast_tasks, return_exceptions=True)
+            sent_total = 0
+            failed_total = 0
+            for result in results:
+                if isinstance(result, dict):
+                    sent_total += result.get('sent', 0)
+                    failed_total += result.get('failed', 0)
+            if sent_total > 0 or failed_total > 0:
+                await message.answer(f"🔔 <b>Уведомления:</b> Отправлено {sent_total}, ошибок {failed_total}")
     else:
         await message.answer("⚠️ Не было обновлено ни одной записи. Проверьте данные в Excel.")
 

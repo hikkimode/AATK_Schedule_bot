@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config import Config
 from services.audit_service import AuditService, ScheduleService
+from services.broadcast_service import BroadcastService
 from services.notification_service import NotificationService
 
 
@@ -45,10 +46,28 @@ class ServiceMiddleware(BaseMiddleware):
     ) -> Any:
         bot: Bot = data["bot"]
         async with self._session_factory() as session:
+            # Initialize all services
             notification_service = NotificationService(bot=bot, superadmin_ids=set(self._config.superadmin_ids))
+            broadcast_service = BroadcastService(bot=bot)
+            schedule_service = ScheduleService(session)
+            audit_service = AuditService(session, notification_service)
+            
+            # Try to load user language from database (for existing profiles)
+            user = data.get("event_from_user")
+            user_id = getattr(user, "id", None)
+            user_language = "ru"  # Default language
+            if isinstance(user_id, int):
+                profile = await schedule_service.get_user_profile(user_id)
+                if profile and profile.language:
+                    user_language = profile.language
+            
+            # Inject services into data dictionary for handlers
             data["session"] = session
-            data["schedule_service"] = ScheduleService(session)
-            data["audit_service"] = AuditService(session, notification_service)
+            data["schedule_service"] = schedule_service
+            data["audit_service"] = audit_service
             data["notification_service"] = notification_service
+            data["broadcast_service"] = broadcast_service
             data["config"] = self._config
+            data["user_language"] = user_language
+            
             return await handler(event, data)

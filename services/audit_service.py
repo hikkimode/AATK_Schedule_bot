@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +38,7 @@ class ImportReport:
     updated_groups: list[str]
     skipped_rows: int
     errors: list[str]
+    changes_by_group: dict[str, list[dict]] = field(default_factory=dict)
 
 
 class ScheduleService:
@@ -134,6 +135,7 @@ class ScheduleService:
             raise ValueError(f"В Excel отсутствуют обязательные колонки: {missing}.")
 
         data_list = []
+        changes_by_group: dict[str, list[dict]] = {}
         skipped_rows = 0
         errors: list[str] = []
 
@@ -167,6 +169,44 @@ class ScheduleService:
 
             raw_text = self._build_raw_text(subject, teacher, room)
 
+            # Check if lesson exists and detect changes
+            existing_lesson = await self.get_lesson(group_name, day, lesson_number)
+            is_changed = False
+            if existing_lesson:
+                # Compare key fields for changes
+                if (
+                    existing_lesson.subject != subject
+                    or existing_lesson.teacher != teacher
+                    or existing_lesson.room != room
+                    or existing_lesson.start_time != start_time
+                    or existing_lesson.end_time != end_time
+                ):
+                    is_changed = True
+                    # Record change for broadcast
+                    if group_name not in changes_by_group:
+                        changes_by_group[group_name] = []
+                    changes_by_group[group_name].append({
+                        "day": day,
+                        "lesson_number": lesson_number,
+                        "old": {
+                            "subject": existing_lesson.subject,
+                            "teacher": existing_lesson.teacher,
+                            "room": existing_lesson.room,
+                            "start_time": existing_lesson.start_time,
+                            "end_time": existing_lesson.end_time,
+                        },
+                        "new": {
+                            "subject": subject,
+                            "teacher": teacher,
+                            "room": room,
+                            "start_time": start_time,
+                            "end_time": end_time,
+                        },
+                    })
+            else:
+                # New lesson - not marked as change
+                is_changed = False
+
             data = {
                 "group_name": group_name,
                 "day": day,
@@ -177,12 +217,12 @@ class ScheduleService:
                 "start_time": start_time,
                 "end_time": end_time,
                 "raw_text": raw_text,
-                "is_change": True,
+                "is_change": is_changed,
             }
             data_list.append(data)
 
         if data_list:
-            logger.info(f"Импорт: {len(data_list)} строк")
+            logger.info(f"Импорт: {len(data_list)} строк, изменений: {len(changes_by_group)} групп")
             stmt = insert(Schedule).values(data_list)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["group_name", "day", "lesson_number"],
@@ -207,6 +247,7 @@ class ScheduleService:
             updated_groups=updated_groups,
             skipped_rows=skipped_rows,
             errors=errors,
+            changes_by_group=changes_by_group,
         )
 
     @staticmethod
