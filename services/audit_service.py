@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Select, func, select, delete
+from sqlalchemy import Select, func, select, delete, case
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,43 +60,23 @@ class ScheduleService:
 
     async def get_lessons(self, group_name: str, day: str) -> list[Schedule]:
         """
-        Retrieve lessons with priority-based logic:
-        1. If schedule overrides (is_change=True) exist for group+day, return those
-        2. Otherwise, return master schedule records (is_change=False)
+        Retrieve lessons WITH priority-based logic:
+        1. Query ALL lessons for group+day (both master and override records)
+        2. Return sorted by lesson_number
         
-        This ensures temporary changes override permanent master records.
+        NOTE: This returns ALL records. Override records (is_change=True) should be
+        displayed alongside masters. The "priority" logic is handled by broadcast/admin,
+        not by filtering here.
         """
-        # First try to get override records (is_change=True) - these take priority
-        override_query = (
+        query = (
             select(Schedule)
-            .where(
-                Schedule.group_name == group_name,
-                Schedule.day == day,
-                Schedule.is_change == True,
-            )
+            .where(Schedule.group_name == group_name, Schedule.day == day)
             .order_by(Schedule.lesson_number)
         )
-        override_result = await self._session.scalars(override_query)
-        override_lessons = list(override_result)
-        
-        if override_lessons:
-            logger.debug(f"get_lessons({group_name}, {day}): found {len(override_lessons)} override records")
-            return override_lessons
-        
-        # If no overrides, return master records (is_change=False)
-        master_query = (
-            select(Schedule)
-            .where(
-                Schedule.group_name == group_name,
-                Schedule.day == day,
-                Schedule.is_change == False,
-            )
-            .order_by(Schedule.lesson_number)
-        )
-        master_result = await self._session.scalars(master_query)
-        master_lessons = list(master_result)
-        logger.debug(f"get_lessons({group_name}, {day}): found {len(master_lessons)} master records")
-        return master_lessons
+        result = await self._session.scalars(query)
+        lessons = list(result)
+        logger.debug(f"get_lessons({group_name}, {day}): found {len(lessons)} records (masters + overrides)")
+        return lessons
 
     async def get_lesson(self, group_name: str, day: str, lesson_number: int) -> Schedule | None:
         query = select(Schedule).where(
@@ -264,11 +244,46 @@ class ScheduleService:
                     "start_time": stmt.excluded.start_time,
                     "end_time": stmt.excluded.end_time,
                     "raw_text": stmt.excluded.raw_text,
-                    "is_change": stmt.excluded.is_change,
+                    # CRITICAL FIX: Preserve is_change flag for existing records
+                    # Priority: existing is_change=True > new is_change=True > False
+                    "is_change": case(
+                        # Если существующая запись уже была изменением — сохраняем True
+                        (Schedule.is_change == True, True),
+                        # Если новые данные помечены как изменение — ставим True
+                        (stmt.excluded.is_change == True, True),
+                        # Иначе это базовое расписание
+                        else_=False
+                    ),
                 }
             )
-            await self._session.execute(stmt)
-            await self._session.commit()
+
+            try:
+                await self._session.execute(stmt)
+
+                # Log imported changes to audit trail (до commit, для атомарности)
+                for group_name, changes in changes_by_group.items():
+                    for change in changes:
+                        audit_log = AuditLog(
+                            tg_id=0,  # System import
+                            full_name="System Import",
+                            action="import_lesson_change",
+                            group_name=group_name,
+                            day=change["day"],
+                            lesson_num=change["lesson_number"],
+                            old_value=json.dumps(change["old"], ensure_ascii=False),
+                            new_value=json.dumps(change["new"], ensure_ascii=False),
+                            timestamp=datetime.now(),
+                        )
+                        self._session.add(audit_log)
+
+                # Единый commit для всех изменений (атомарная операция)
+                await self._session.commit()
+
+                if changes_by_group:
+                    logger.info(f"Audit logged {sum(len(v) for v in changes_by_group.values())} changes")
+            except Exception:
+                await self._session.rollback()
+                raise
 
         updated_rows = len(data_list)
         updated_groups = sorted(set(d["group_name"] for d in data_list))
