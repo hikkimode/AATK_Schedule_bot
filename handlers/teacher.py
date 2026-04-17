@@ -31,6 +31,7 @@ def _groups_keyboard(groups: list[str]) -> InlineKeyboardMarkup:
     buttons = [InlineKeyboardButton(text=group, callback_data=f"teacher_group:{group}") for group in groups]
     rows = _chunk_buttons(buttons, 3)
     rows.append([InlineKeyboardButton(text="📥 Импорт изменений из Excel", callback_data="teacher_import_excel")])
+    rows.append([InlineKeyboardButton(text="🗑 Сбросить все замены", callback_data="teacher_reset_confirm")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -161,6 +162,82 @@ async def teacher_import_excel(
         "Отправьте файл <b>.xlsx</b> прямо в этот чат.\n"
         "Ожидаемые колонки:\n"
         "<code>group_name, day, lesson_number, subject, teacher, room, start_time, end_time</code>"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "teacher_reset_confirm")
+async def teacher_reset_confirm(
+    callback: CallbackQuery,
+    role: str,
+) -> None:
+    if role not in {"teacher", "superadmin"}:
+        await callback.answer(_access_denied_text(), show_alert=True)
+        return
+    
+    confirm_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, сбросить", callback_data="teacher_reset_execute"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="teacher_reset_cancel"),
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "⚠️ <b>Внимание!</b>\n\n"
+        "Вы собираетесь удалить все временные изменения расписания.\n"
+        "Система вернётся к основному (базовому) расписанию.\n\n"
+        "Это действие <b>необратимо</b>.\n"
+        "Вы уверены?",
+        reply_markup=confirm_keyboard,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "teacher_reset_execute")
+async def teacher_reset_execute(
+    callback: CallbackQuery,
+    state: FSMContext,
+    role: str,
+    audit_service: AuditService,
+    schedule_service: ScheduleService,
+) -> None:
+    if role not in {"teacher", "superadmin"}:
+        await callback.answer(_access_denied_text(), show_alert=True)
+        return
+    
+    try:
+        await audit_service.reset_all_changes(
+            tg_id=callback.from_user.id,
+            full_name=callback.from_user.full_name or "Unknown",
+        )
+        await callback.message.edit_text(
+            "✅ <b>Успешно!</b>\n\n"
+            "Все временные изменения расписания удалены.\n"
+            "Система восстановлена до основного расписания.",
+        )
+        await state.set_state(TeacherStates.group)
+        groups = await schedule_service.list_groups()
+        await callback.message.edit_text(
+            "Выберите группу для редактирования.",
+            reply_markup=_groups_keyboard(groups),
+        )
+    except Exception as error:
+        await callback.message.edit_text(f"❌ Ошибка при сбросе: {html.escape(str(error))}")
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data == "teacher_reset_cancel")
+async def teacher_reset_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+    schedule_service: ScheduleService,
+) -> None:
+    await state.set_state(TeacherStates.group)
+    groups = await schedule_service.list_groups()
+    await callback.message.edit_text(
+        "Выберите группу для редактирования.",
+        reply_markup=_groups_keyboard(groups),
     )
     await callback.answer()
 

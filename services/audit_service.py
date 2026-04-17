@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, delete
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,13 +59,44 @@ class ScheduleService:
         return sorted(values, key=lambda item: order_map.get(item, len(order_map)))
 
     async def get_lessons(self, group_name: str, day: str) -> list[Schedule]:
-        query = (
+        """
+        Retrieve lessons with priority-based logic:
+        1. If schedule overrides (is_change=True) exist for group+day, return those
+        2. Otherwise, return master schedule records (is_change=False)
+        
+        This ensures temporary changes override permanent master records.
+        """
+        # First try to get override records (is_change=True) - these take priority
+        override_query = (
             select(Schedule)
-            .where(Schedule.group_name == group_name, Schedule.day == day)
+            .where(
+                Schedule.group_name == group_name,
+                Schedule.day == day,
+                Schedule.is_change == True,
+            )
             .order_by(Schedule.lesson_number)
         )
-        result = await self._session.scalars(query)
-        return list(result)
+        override_result = await self._session.scalars(override_query)
+        override_lessons = list(override_result)
+        
+        if override_lessons:
+            logger.debug(f"get_lessons({group_name}, {day}): found {len(override_lessons)} override records")
+            return override_lessons
+        
+        # If no overrides, return master records (is_change=False)
+        master_query = (
+            select(Schedule)
+            .where(
+                Schedule.group_name == group_name,
+                Schedule.day == day,
+                Schedule.is_change == False,
+            )
+            .order_by(Schedule.lesson_number)
+        )
+        master_result = await self._session.scalars(master_query)
+        master_lessons = list(master_result)
+        logger.debug(f"get_lessons({group_name}, {day}): found {len(master_lessons)} master records")
+        return master_lessons
 
     async def get_lesson(self, group_name: str, day: str, lesson_number: int) -> Schedule | None:
         query = select(Schedule).where(
@@ -399,6 +430,39 @@ class AuditService:
         self._session.add(audit_log)
         await self._session.flush()
         return await self._commit_and_notify(audit_log)
+
+    async def reset_all_changes(self, tg_id: int, full_name: str) -> None:
+        """
+        Reset all schedule changes by deleting all records where is_change=True.
+        Restores the system to the Master Schedule (only is_change=False records remain).
+        """
+        from sqlalchemy import delete
+        
+        # Get count of records to be deleted for logging
+        count_query = select(func.count(Schedule.id)).where(Schedule.is_change == True)
+        count_result = await self._session.scalar(count_query)
+        deleted_count = count_result or 0
+        
+        # Delete all override records
+        delete_query = delete(Schedule).where(Schedule.is_change == True)
+        await self._session.execute(delete_query)
+        await self._session.commit()
+        
+        logger.info(f"Reset all changes: deleted {deleted_count} override records")
+        
+        # Log the action in audit trail
+        audit_log = self._build_audit_log(
+            tg_id=tg_id,
+            full_name=full_name,
+            action="reset_all_changes",
+            group_name="*",
+            day="*",
+            lesson_num=0,
+            old_value=f"Deleted {deleted_count} schedule override records",
+            new_value="Master Schedule restored",
+        )
+        self._session.add(audit_log)
+        await self._session.commit()
 
     async def _get_lesson(self, group_name: str, day: str, lesson_number: int) -> Schedule | None:
         query = select(Schedule).where(
