@@ -12,7 +12,7 @@ from aiohttp import web
 from loguru import logger
 from uvicorn import Config, Server
 
-from api.main_api import create_api_app
+from api.main_api import app as api_app
 from config import load_config
 from database import create_engine_and_sessionmaker, init_database
 from handlers.student import router as student_router
@@ -89,11 +89,11 @@ async def run_bot(config, session_factory, engine) -> None:
         await healthcheck_runner.cleanup()
 
 
-async def run_api(config) -> None:
-    api_app = create_api_app(config.database_url)
-    config_uvicorn = Config(app=api_app, host="0.0.0.0", port=int(os.getenv("API_PORT", "8000")), log_level="info")
+async def run_api() -> None:
+    port = int(os.getenv("API_PORT", "8000"))
+    config_uvicorn = Config(app=api_app, host="0.0.0.0", port=port, log_level="info")
     server = Server(config_uvicorn)
-    logger.info("API server started on port " + str(config_uvicorn.port))
+    logger.info("API server started on port " + str(port))
     await server.serve()
 
 
@@ -111,7 +111,7 @@ async def main() -> None:
     try:
         await asyncio.gather(
             run_bot(config, session_factory, engine),
-            run_api(config),
+            run_api(),
         )
     except Exception as e:
         logger.exception("Fatal error in main loop")
