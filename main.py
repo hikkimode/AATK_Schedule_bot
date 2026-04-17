@@ -15,8 +15,9 @@ from config import load_config
 from database import create_engine_and_sessionmaker, init_database
 from handlers.student import router as student_router
 from handlers.teacher import router as teacher_router
+from middlewares.activity_middleware import ActivityMiddleware
 from middlewares.role_middleware import RoleMiddleware, ServiceMiddleware
-from models import AuditLog, Schedule
+from models import AuditLog, Schedule, UserProfile
 
 
 def build_main_menu(role: str) -> ReplyKeyboardMarkup:
@@ -64,12 +65,14 @@ async def main() -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
     config = load_config()
-    _ = (Schedule, AuditLog)
+    _ = (Schedule, AuditLog, UserProfile)
     engine, session_factory = create_engine_and_sessionmaker(config.database_url)
     await init_database(engine)
     healthcheck_runner, _ = await start_healthcheck_server()
     bot = Bot(token=config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dispatcher = Dispatcher(storage=MemoryStorage())
+    storage = MemoryStorage()
+    dispatcher = Dispatcher(storage=storage)
+    dispatcher.update.outer_middleware(ActivityMiddleware())
     dispatcher.update.outer_middleware(RoleMiddleware(config))
     dispatcher.update.outer_middleware(ServiceMiddleware(session_factory, config))
     dispatcher.include_router(student_router)

@@ -40,3 +40,12 @@ class AuditLog(Base):
     old_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     new_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    tg_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    language: Mapped[str] = mapped_column(Text, nullable=False, default="ru", server_default="ru")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)

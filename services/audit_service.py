@@ -11,7 +11,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import AuditLog, Schedule
+from models import AuditLog, Schedule, UserProfile
 from services.notification_service import NotificationService
 
 
@@ -73,6 +73,33 @@ class ScheduleService:
             Schedule.lesson_number == lesson_number,
         )
         return await self._session.scalar(query)
+
+    async def get_user_profile(self, tg_id: int) -> UserProfile | None:
+        query = select(UserProfile).where(UserProfile.tg_id == tg_id)
+        return await self._session.scalar(query)
+
+    async def save_user_profile(
+        self,
+        tg_id: int,
+        group_name: str | None = None,
+        language: str | None = None,
+    ) -> UserProfile:
+        profile = await self.get_user_profile(tg_id)
+        if profile is None:
+            profile = UserProfile(
+                tg_id=tg_id,
+                group_name=group_name,
+                language=language or "ru",
+            )
+            self._session.add(profile)
+        else:
+            if group_name is not None:
+                profile.group_name = group_name
+            if language is not None:
+                profile.language = language
+            profile.updated_at = datetime.utcnow()
+        await self._session.flush()
+        return profile
 
     async def get_max_lesson_number(self) -> int:
         query: Select[tuple[int | None]] = select(func.max(Schedule.lesson_number))

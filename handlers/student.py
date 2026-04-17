@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -12,6 +13,17 @@ from states import StudentStates
 
 
 router = Router()
+
+LOCAL_TZ = timezone(timedelta(hours=5))
+DAY_INDEX_TO_RUS = [
+    "Понедельник",
+    "Вторник",
+    "Среда",
+    "Четверг",
+    "Пятница",
+    "Суббота",
+    "Воскресенье",
+]
 
 NO_SCHEDULE_MESSAGE = "Ошибка: Расписание еще не загружено в систему"
 
@@ -54,6 +66,11 @@ TEXTS = {
         "subject": "Предмет",
         "teacher": "Преподаватель",
         "room": "Кабинет",
+        "today": "Сегодня",
+        "tomorrow": "Завтра",
+        "choose_day_button": "Выбрать день",
+        "change_group": "Сменить группу",
+        "choose_group_button": "Выбрать группу",
     },
     "kz": {
         "welcome": "Интерфейс тілін таңдаңыз.",
@@ -72,6 +89,11 @@ TEXTS = {
         "subject": "Пән",
         "teacher": "Оқытушы",
         "room": "Кабинет",
+        "today": "Бүгін",
+        "tomorrow": "Ертең",
+        "choose_day_button": "Күнді таңдау",
+        "change_group": "Топты өзгерту",
+        "choose_group_button": "Топты таңдау",
     },
 }
 
@@ -156,9 +178,48 @@ def _render_schedule(group_name: str, day: str, lessons: list, language: str) ->
     return "\n".join(lines).strip()
 
 
+def _student_home_keyboard(language: str, has_group: bool) -> InlineKeyboardMarkup:
+    texts = TEXTS[language]
+    buttons = [
+        [InlineKeyboardButton(text=texts["today"], callback_data="student_today")],
+        [InlineKeyboardButton(text=texts["tomorrow"], callback_data="student_tomorrow")],
+    ]
+    if has_group:
+        buttons.append([InlineKeyboardButton(text=texts["choose_day_button"], callback_data="student_choose_day")])
+        buttons.append([InlineKeyboardButton(text=texts["change_group"], callback_data="student_change_group")])
+    else:
+        buttons.append([InlineKeyboardButton(text=texts["choose_group_button"], callback_data="student_choose_group")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _student_home_text(language: str, group_name: str | None = None) -> str:
+    texts = TEXTS[language]
+    if group_name:
+        return (
+            f"👥 <b>{texts['group']}:</b> {html.escape(group_name)}\n\n"
+            f"{texts['choose_group']}"
+        )
+    return texts["choose_group"]
+
+
+def _compute_day_by_offset(offset: int = 0) -> str:
+    now = datetime.now(LOCAL_TZ)
+    day_index = (now.weekday() + offset) % len(DAY_INDEX_TO_RUS)
+    return DAY_INDEX_TO_RUS[day_index]
+
+
 @router.message(Command("start"))
-async def start_student(message: Message, state: FSMContext, role: str) -> None:
+async def start_student(message: Message, state: FSMContext, role: str, schedule_service: ScheduleService) -> None:
     await state.clear()
+    profile = await schedule_service.get_user_profile(message.from_user.id)
+    if profile and profile.group_name:
+        await state.update_data(language=profile.language, group_name=profile.group_name)
+        await message.answer(
+            _student_home_text(profile.language, profile.group_name),
+            reply_markup=_student_home_keyboard(profile.language, True),
+        )
+        return
+
     await state.set_state(StudentStates.language)
     key = "welcome_teacher" if role in {"teacher", "superadmin"} else "welcome"
     await message.answer(TEXTS["ru"][key], reply_markup=_language_keyboard())
@@ -177,6 +238,7 @@ async def select_language(
     schedule_service: ScheduleService,
 ) -> None:
     language = callback.data.split(":", maxsplit=1)[1]
+    await schedule_service.save_user_profile(callback.from_user.id, language=language)
     groups = await schedule_service.list_groups()
     if not groups:
         await callback.message.edit_text(NO_SCHEDULE_MESSAGE)
@@ -215,10 +277,106 @@ async def select_group(
     group_name = callback.data.split(":", maxsplit=1)[1]
     data = await state.get_data()
     language = _resolve_language(data)
-    days = await schedule_service.list_days(group_name=group_name)
+    await schedule_service.save_user_profile(callback.from_user.id, group_name=group_name)
     await state.update_data(group_name=group_name)
     await state.set_state(StudentStates.day)
+    await callback.message.edit_text(
+        _student_home_text(language, group_name),
+        reply_markup=_student_home_keyboard(language, True),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "student_choose_group")
+async def choose_group_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+    schedule_service: ScheduleService,
+) -> None:
+    data = await state.get_data()
+    language = _resolve_language(data)
+    groups = await schedule_service.list_groups()
+    if not groups:
+        await callback.message.edit_text(NO_SCHEDULE_MESSAGE)
+        await callback.answer()
+        return
+    await state.set_state(StudentStates.group)
+    await callback.message.edit_text(TEXTS[language]["choose_group"], reply_markup=_groups_keyboard(groups))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "student_change_group")
+async def change_group_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+    schedule_service: ScheduleService,
+) -> None:
+    data = await state.get_data()
+    language = _resolve_language(data)
+    await schedule_service.save_user_profile(callback.from_user.id, group_name=None)
+    groups = await schedule_service.list_groups()
+    if not groups:
+        await callback.message.edit_text(NO_SCHEDULE_MESSAGE)
+        await callback.answer()
+        return
+    await state.set_state(StudentStates.group)
+    await callback.message.edit_text(TEXTS[language]["choose_group"], reply_markup=_groups_keyboard(groups))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "student_choose_day")
+async def choose_day_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+    schedule_service: ScheduleService,
+) -> None:
+    data = await state.get_data()
+    language = _resolve_language(data)
+    group_name = data.get("group_name")
+    if not group_name:
+        await choose_group_callback(callback, state, schedule_service)
+        return
+    days = await schedule_service.list_days(group_name=group_name)
+    await state.set_state(StudentStates.day)
     await callback.message.edit_text(TEXTS[language]["choose_day"], reply_markup=_days_keyboard(days, language))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "student_today")
+async def student_today(
+    callback: CallbackQuery,
+    state: FSMContext,
+    schedule_service: ScheduleService,
+) -> None:
+    data = await state.get_data()
+    language = _resolve_language(data)
+    profile = await schedule_service.get_user_profile(callback.from_user.id)
+    if profile is None or not profile.group_name:
+        await choose_group_callback(callback, state, schedule_service)
+        return
+    day = _compute_day_by_offset(0)
+    lessons = await schedule_service.get_lessons(profile.group_name, day=day)
+    text = _render_schedule(profile.group_name, day=day, lessons=lessons, language=language)
+    await callback.message.edit_text(text, reply_markup=_student_home_keyboard(language, True))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "student_tomorrow")
+async def student_tomorrow(
+    callback: CallbackQuery,
+    state: FSMContext,
+    schedule_service: ScheduleService,
+) -> None:
+    data = await state.get_data()
+    language = _resolve_language(data)
+    profile = await schedule_service.get_user_profile(callback.from_user.id)
+    if profile is None or not profile.group_name:
+        await choose_group_callback(callback, state, schedule_service)
+        return
+    day = _compute_day_by_offset(1)
+    lessons = await schedule_service.get_lessons(profile.group_name, day=day)
+    text = _render_schedule(profile.group_name, day=day, lessons=lessons, language=language)
+    await callback.message.edit_text(text, reply_markup=_student_home_keyboard(language, True))
     await callback.answer()
 
 
@@ -258,7 +416,6 @@ async def show_day_schedule(
         await callback.answer()
         return
     lessons = await schedule_service.get_lessons(group_name=group_name, day=day)
-    days = await schedule_service.list_days(group_name=group_name)
     text = _render_schedule(group_name=group_name, day=day, lessons=lessons, language=language)
-    await callback.message.edit_text(text, reply_markup=_schedule_keyboard(days, language))
+    await callback.message.edit_text(text, reply_markup=_student_home_keyboard(language, True))
     await callback.answer()
