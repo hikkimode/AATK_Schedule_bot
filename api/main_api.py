@@ -174,6 +174,7 @@ class ChangeResponse(BaseModel):
     start_time: str | None
     end_time: str | None
     raw_text: str | None
+    is_published: bool = False
 
 
 class ChangeCreateRequest(BaseModel):
@@ -239,8 +240,28 @@ async def get_status() -> StatusResponse:
 
 
 @app.get("/schedule/changes", response_model=list[ChangeResponse])
-async def get_schedule_changes(session: AsyncSession = Depends(get_session)) -> list[ChangeResponse]:
-    query = select(Schedule).where(Schedule.is_change == True)
+async def get_schedule_changes(
+    session: AsyncSession = Depends(get_session),
+    authorization: str = Header(None, alias="Authorization")
+) -> list[ChangeResponse]:
+    # Check if user is admin to show all changes (including drafts)
+    is_admin = False
+    if authorization:
+        parts = authorization.split(" ")
+        if len(parts) == 2 and parts[0] == "tma":
+            user = verify_telegram_auth(parts[1])
+            if user and user.id in _superadmin_ids:
+                is_admin = True
+    
+    # Build query: admins see all, regular users see only published
+    if is_admin:
+        query = select(Schedule).where(Schedule.is_change == True)
+    else:
+        query = select(Schedule).where(
+            Schedule.is_change == True,
+            Schedule.is_published == True
+        )
+    
     result = await session.execute(query)
     changes = result.scalars().all()
     return [
@@ -255,6 +276,7 @@ async def get_schedule_changes(session: AsyncSession = Depends(get_session)) -> 
             start_time=c.start_time,
             end_time=c.end_time,
             raw_text=c.raw_text,
+            is_published=c.is_published,
         )
         for c in changes
     ]
@@ -308,6 +330,7 @@ async def create_change(
             end_time=end_time,
             raw_text=raw_text,
             is_change=True,
+            is_published=False,  # New changes are drafts by default
             updated_by=user.id,
         )
         session.add(new_change)
@@ -474,6 +497,44 @@ async def clear_all_changes(
         await session.rollback()
         logger.error(f"Database integrity error: {e}")
         raise HTTPException(status_code=400, detail="Ошибка очистки: невозможно удалить некоторые записи")
+    except DatabaseError as e:
+        await session.rollback()
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Ошибка базы данных. Попробуйте позже.")
+
+
+@app.post("/schedule/publish-all")
+async def publish_all_changes(
+    session: AsyncSession = Depends(get_session),
+    user: TelegramUser = Depends(require_admin)
+) -> dict[str, str]:
+    """Publish all unpublished schedule changes."""
+    try:
+        stmt = (
+            update(Schedule)
+            .where(Schedule.is_change == True, Schedule.is_published == False)
+            .values(is_published=True, updated_by=user.id)
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+
+        published_count = result.rowcount
+
+        # Log audit
+        await log_audit_action(
+            session, user, "PUBLISH_ALL",
+            "ALL", "ALL", 0,
+            f"{published_count} drafts", "Published"
+        )
+
+        return {
+            "message": "All changes published successfully",
+            "published_count": str(published_count)
+        }
+    except IntegrityError as e:
+        await session.rollback()
+        logger.error(f"Database integrity error: {e}")
+        raise HTTPException(status_code=400, detail="Ошибка публикации: невозможно опубликовать некоторые записи")
     except DatabaseError as e:
         await session.rollback()
         logger.error(f"Database error: {e}")

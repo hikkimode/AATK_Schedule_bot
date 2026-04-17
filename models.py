@@ -27,6 +27,7 @@ class Schedule(Base):
     end_time: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_change: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 

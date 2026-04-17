@@ -1,5 +1,6 @@
 {
   "dependencies": {
-    "@twa-dev/sdk": "^8.0.2"
+    "@twa-dev/sdk": "^8.0.2",
+    "react-hot-toast": "^2.6.0"
   }
 }
