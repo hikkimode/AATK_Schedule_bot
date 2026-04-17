@@ -75,6 +75,7 @@ class ScheduleService:
         return await self._session.scalar(query)
 
     async def get_user_profile(self, tg_id: int) -> UserProfile | None:
+        # Telegram IDs are stored as BIGINT in the DB to support values above int32 range.
         query = select(UserProfile).where(UserProfile.tg_id == tg_id)
         return await self._session.scalar(query)
 
@@ -84,6 +85,7 @@ class ScheduleService:
         group_name: str | None = None,
         language: str | None = None,
     ) -> UserProfile:
+        # Always persist Telegram identifiers as 64-bit integers.
         profile = await self.get_user_profile(tg_id)
         if profile is None:
             profile = UserProfile(

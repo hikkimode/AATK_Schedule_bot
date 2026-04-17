@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Text
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -11,6 +11,8 @@ class Base(AsyncAttrs, DeclarativeBase):
     pass
 
 
+# Telegram identifiers (tg_id, chat_id, user_id) can exceed signed 32-bit range.
+# Use BIGINT for these columns in PostgreSQL to avoid out-of-range failures.
 class Schedule(Base):
     __tablename__ = "schedule"
 
@@ -30,8 +32,9 @@ class Schedule(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
+    # Telegram IDs may exceed signed 32-bit range, so use BIGINT for tg_id.
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    tg_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(Text, nullable=False)
     group_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -45,7 +48,8 @@ class AuditLog(Base):
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
-    tg_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Telegram IDs may exceed signed 32-bit range, so use BIGINT for tg_id.
+    tg_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str] = mapped_column(Text, nullable=False, default="ru", server_default="ru")
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
