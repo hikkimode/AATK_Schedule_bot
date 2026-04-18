@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum as PyEnum
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, Text
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -75,3 +76,45 @@ class UserProfile(Base):
     language: Mapped[str] = mapped_column(Text, nullable=False, default="ru", server_default="ru")
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+
+
+class NotificationStatus(str, PyEnum):
+    """Status values for notification queue."""
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
+class NotificationQueue(Base):
+    """Queue for targeted notifications to students about schedule changes.
+    
+    Records are created when schedule changes are published, then processed
+    by the background worker to send actual Telegram messages.
+    """
+    __tablename__ = "notification_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    message_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, 
+        nullable=False, 
+        default=NotificationStatus.PENDING.value,
+        server_default=NotificationStatus.PENDING.value,
+        index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, 
+        nullable=False, 
+        default=datetime.now,
+        index=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Group reference for tracking which schedule change triggered this notification
+    group_name: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+
+    __table_args__ = (
+        Index('idx_notification_queue_status_created', 'status', 'created_at'),
+        Index('idx_notification_queue_user_status', 'user_id', 'status'),
+    )

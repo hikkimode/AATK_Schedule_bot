@@ -19,7 +19,8 @@ from sqlalchemy.exc import IntegrityError, DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from database import create_engine_and_sessionmaker
-from models import AuditLog, Schedule, UserProfile
+from models import AuditLog, NotificationQueue, NotificationStatus, Schedule, UserProfile
+from services.notification_worker import NotificationEnqueuer
 from utils.exceptions import setup_logging
 
 setup_logging()
@@ -531,33 +532,108 @@ async def clear_all_changes(
         raise HTTPException(status_code=500, detail="Ошибка базы данных. Попробуйте позже.")
 
 
+@app.get("/notifications/stats", response_model=dict[str, Any])
+async def get_notification_stats(
+    session: AsyncSession = Depends(get_session),
+    user: TelegramUser = Depends(require_admin)
+) -> dict[str, Any]:
+    """Get notification queue statistics (admin only)."""
+    from sqlalchemy import func
+    
+    pending_query = select(func.count(NotificationQueue.id)).where(
+        NotificationQueue.status == NotificationStatus.PENDING.value
+    )
+    sent_query = select(func.count(NotificationQueue.id)).where(
+        NotificationQueue.status == NotificationStatus.SENT.value
+    )
+    failed_query = select(func.count(NotificationQueue.id)).where(
+        NotificationQueue.status == NotificationStatus.FAILED.value
+    )
+    
+    # Recent pending notifications (last 24h)
+    from datetime import datetime, timedelta
+    recent_pending_query = select(func.count(NotificationQueue.id)).where(
+        NotificationQueue.status == NotificationStatus.PENDING.value,
+        NotificationQueue.created_at >= datetime.now() - timedelta(hours=24)
+    )
+    
+    pending = await session.scalar(pending_query) or 0
+    sent = await session.scalar(sent_query) or 0
+    failed = await session.scalar(failed_query) or 0
+    recent_pending = await session.scalar(recent_pending_query) or 0
+    
+    # Get per-group breakdown for pending
+    group_query = (
+        select(NotificationQueue.group_name, func.count(NotificationQueue.id))
+        .where(NotificationQueue.status == NotificationStatus.PENDING.value)
+        .group_by(NotificationQueue.group_name)
+    )
+    group_result = await session.execute(group_query)
+    per_group = {group or "Unknown": count for group, count in group_result.all()}
+    
+    return {
+        "pending": pending,
+        "sent": sent,
+        "failed": failed,
+        "total": pending + sent + failed,
+        "recent_pending_24h": recent_pending,
+        "per_group_pending": per_group,
+    }
+
+
 @app.post("/schedule/publish-all")
 async def publish_all_changes(
     session: AsyncSession = Depends(get_session),
     user: TelegramUser = Depends(require_admin)
-) -> dict[str, str]:
-    """Publish all unpublished schedule changes."""
+) -> dict[str, Any]:
+    """Publish all unpublished schedule changes and enqueue notifications."""
     try:
+        # First, find which groups will be affected (for notifications)
+        affected_groups_query = (
+            select(Schedule.group_name)
+            .where(Schedule.is_change == True, Schedule.is_published == False)
+            .distinct()
+        )
+        groups_result = await session.execute(affected_groups_query)
+        affected_groups = [g for g in groups_result.scalars().all() if g]
+        
+        # Update all unpublished changes to published
         stmt = (
             update(Schedule)
             .where(Schedule.is_change == True, Schedule.is_published == False)
             .values(is_published=True, updated_by=user.id)
         )
         result = await session.execute(stmt)
-        await session.commit()
+        await session.flush()  # Flush to get the changes but keep transaction open
 
         published_count = result.rowcount
+        
+        # Enqueue notifications for affected groups
+        enqueued_count = 0
+        if affected_groups and published_count > 0:
+            try:
+                enqueuer = NotificationEnqueuer(session)
+                enqueued_count = await enqueuer.enqueue_schedule_change_notifications(affected_groups)
+                logger.info(f"Enqueued {enqueued_count} notifications for groups: {affected_groups}")
+            except Exception as e:
+                logger.error(f"Failed to enqueue notifications: {e}")
+                # Don't fail the publish if notification enqueue fails
+                # The worker can be run manually to process missed notifications
+        
+        await session.commit()
 
         # Log audit
         await log_audit_action(
             session, user, "PUBLISH_ALL",
             "ALL", "ALL", 0,
-            f"{published_count} drafts", "Published"
+            f"{published_count} drafts", f"Published, {enqueued_count} notifications enqueued"
         )
 
         return {
             "message": "All changes published successfully",
-            "published_count": str(published_count)
+            "published_count": str(published_count),
+            "affected_groups": affected_groups,
+            "notifications_enqueued": enqueued_count,
         }
     except IntegrityError as e:
         await session.rollback()
