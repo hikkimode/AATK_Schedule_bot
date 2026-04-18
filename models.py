@@ -30,6 +30,14 @@ class Schedule(Base):
     is_change: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Optimistic locking: version field for conflict detection
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, 
+        nullable=False, 
+        default=datetime.now,
+        onupdate=datetime.now
+    )
 
 
 class BaseSchedule(Base):
