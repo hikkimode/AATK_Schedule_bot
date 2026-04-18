@@ -7,6 +7,7 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.types import Update
+from aiogram.types.error_event import ErrorEvent
 from loguru import logger as loguru_logger
 from pydantic import ValidationError
 
@@ -90,12 +91,16 @@ def setup_logging() -> None:
 def setup_exception_handlers(bot: Bot, admin_ids: set[int]):
     from loguru import logger
 
-    async def global_error_handler(event: Update, exception: Exception) -> bool:
+    async def global_error_handler(event: ErrorEvent) -> bool:
+        # Extract update and exception from ErrorEvent
+        update = event.update
+        exception = event.exception
+        
         user_id = None
-        if event.message:
-            user_id = event.message.from_user.id
-        elif event.callback_query:
-            user_id = event.callback_query.from_user.id
+        if update.message:
+            user_id = update.message.from_user.id if update.message.from_user else None
+        elif update.callback_query:
+            user_id = update.callback_query.from_user.id if update.callback_query.from_user else None
 
         user_message = "❌ Произошла ошибка. Попробуйте позже или обратитесь к администратору."
         admin_message = None
@@ -122,10 +127,10 @@ def setup_exception_handlers(bot: Bot, admin_ids: set[int]):
             admin_message = "🚨 UNHANDLED ERROR\nUser: " + str(user_id) + "\nType: " + type(exception).__name__ + "\nMessage: " + str(exception) + "\n\nTraceback:\n" + tb[-2000:]
 
         try:
-            if event.message:
-                await event.message.answer(user_message)
-            elif event.callback_query:
-                await event.callback_query.answer(user_message[:200], show_alert=True)
+            if update.message:
+                await update.message.answer(user_message)
+            elif update.callback_query:
+                await update.callback_query.answer(user_message[:200], show_alert=True)
         except Exception as e:
             logger.error("Failed to send error message: " + str(e))
 
