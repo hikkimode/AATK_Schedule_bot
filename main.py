@@ -14,6 +14,7 @@ from uvicorn import Config, Server
 from api.main_api import app as api_app
 from config import load_config
 from database import create_engine_and_sessionmaker, init_database
+from handlers.admin import router as admin_router
 from handlers.student import router as student_router
 from handlers.teacher import router as teacher_router
 from middlewares.activity_middleware import ActivityMiddleware
@@ -60,6 +61,7 @@ async def run_bot(config, session_factory, engine) -> None:
 
     dispatcher.include_router(student_router)
     dispatcher.include_router(teacher_router)
+    dispatcher.include_router(admin_router)
 
     await set_commands(bot)
     logger.info("Bot started successfully")
