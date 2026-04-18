@@ -57,6 +57,15 @@ def _groups_keyboard(groups: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=_chunk_buttons(buttons, 3))
 
 
+def _subgroups_keyboard(language: str) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=get_text("subgroup_all", language), callback_data="student_subgroup:0")],
+        [InlineKeyboardButton(text=get_text("subgroup_1", language), callback_data="student_subgroup:1")],
+        [InlineKeyboardButton(text=get_text("subgroup_2", language), callback_data="student_subgroup:2")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def _days_keyboard(days: list[str], language: str) -> InlineKeyboardMarkup:
     labels = {day: (DAY_LABELS_KZ.get(day, day) if language == "kk" else day) for day in days}
     buttons = [InlineKeyboardButton(text=labels.get(day, day), callback_data=f"student_day:{day}") for day in days]
@@ -100,8 +109,16 @@ def _render_schedule(group_name: str, day: str, lessons: list, language: str) ->
         f"📚 <b>{get_text('schedule_title', language)}</b>",
         f"👥 <b>{get_text('group', language)}:</b> {html.escape(group_name)}",
         f"🗓 <b>{get_text('day', language)}:</b> {html.escape(day_label)}",
-        "",
     ]
+    
+    # Track which subgroup we are displaying
+    subgroups_seen = {l.subgroup for l in lessons if hasattr(l, 'subgroup')}
+    if 1 in subgroups_seen and 2 not in subgroups_seen:
+        lines.append(f"🔢 <b>{get_text('subgroup_prefix', language)}:</b> 1")
+    elif 2 in subgroups_seen and 1 not in subgroups_seen:
+        lines.append(f"🔢 <b>{get_text('subgroup_prefix', language)}:</b> 2")
+    
+    lines.append("")
     
     if not lessons:
         # Friendly empty state message
@@ -120,9 +137,13 @@ def _render_schedule(group_name: str, day: str, lessons: list, language: str) ->
         status = f"\n⚠️ <b>{get_text('changed', language)}</b>" if lesson.is_change else ""
         start_time = _format_time(lesson.start_time)
         end_time = _format_time(lesson.end_time)
+        subgroup_label = ""
+        if hasattr(lesson, 'subgroup') and lesson.subgroup != 0:
+            subgroup_label = f" ({lesson.subgroup} {get_text('subgroup_prefix', language).lower()})"
+            
         lines.extend([
-            f"🔹 <b>{lesson.lesson_number}{get_text('schedule_title', language).split()[-1] if language == 'kk' else '-пара'}</b>  {html.escape(start_time)} - {html.escape(end_time)}",
-            f"📘 <b>{get_text('subject', language)}:</b> {html.escape(lesson.subject or '—')}",
+            f"🔹 <b>{lesson.num}{get_text('schedule_title', language).split()[-1] if language == 'kk' else '-пара'}</b>  {html.escape(start_time)} - {html.escape(end_time)}{subgroup_label}",
+            f"📘 <b>{get_text('subject', language)}:</b> {html.escape(lesson.name or '—')}",
             f"👩‍🏫 <b>{get_text('teacher', language)}:</b> {html.escape(lesson.teacher or '—')}",
             f"🏫 <b>{get_text('room', language)}:</b> {html.escape(lesson.room or '—')}{status}",
             "",
@@ -235,9 +256,30 @@ async def select_group(
     tg_id = callback.from_user.id
     logger.info(f"Saving profile for {tg_id}: group_name={group_name}")
     await schedule_service.save_user_profile(tg_id, group_name=group_name)
-    profile = await schedule_service.get_user_profile(tg_id)
-    logger.info(f"Profile retrieved after save: {profile}")
+    logger.info(f"Retrieved profile to verify: {profile}")
     await state.update_data(group_name=group_name)
+    await state.set_state(StudentStates.subgroup)
+    await callback.message.edit_text(
+        get_text("choose_subgroup", language),
+        reply_markup=_subgroups_keyboard(language),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("student_subgroup:"))
+async def select_subgroup(
+    callback: CallbackQuery,
+    state: FSMContext,
+    schedule_service: ScheduleService,
+) -> None:
+    subgroup = int(callback.data.split(":", maxsplit=1)[1])
+    data = await state.get_data()
+    language = _resolve_language(data)
+    group_name = data.get("group_name")
+    
+    await schedule_service.save_user_profile(callback.from_user.id, subgroup=subgroup)
+    await state.update_data(subgroup=subgroup)
+    
     await state.set_state(StudentStates.day)
     await callback.message.edit_text(
         _student_home_text(language, group_name),
@@ -317,7 +359,8 @@ async def student_today(
     language = profile.language or "ru"
     logger.info(f"student_today: found profile with group={profile.group_name}, lang={language}")
     day = _compute_day_by_offset(0)
-    lessons = await schedule_service.get_lessons(profile.group_name, day=day)
+    user_subgroup = profile.subgroup if profile else 0
+    lessons = await schedule_service.get_lessons(profile.group_name, day=day, subgroup=user_subgroup)
     text = _render_schedule(profile.group_name, day=day, lessons=lessons, language=language)
     await callback.message.edit_text(text, reply_markup=_student_home_keyboard(language, True))
     await callback.answer()
@@ -339,7 +382,8 @@ async def student_tomorrow(
     language = profile.language or "ru"
     logger.info(f"student_tomorrow: found profile with group={profile.group_name}, lang={language}")
     day = _compute_day_by_offset(1)
-    lessons = await schedule_service.get_lessons(profile.group_name, day=day)
+    user_subgroup = profile.subgroup if profile else 0
+    lessons = await schedule_service.get_lessons(profile.group_name, day=day, subgroup=user_subgroup)
     text = _render_schedule(profile.group_name, day=day, lessons=lessons, language=language)
     await callback.message.edit_text(text, reply_markup=_student_home_keyboard(language, True))
     await callback.answer()
@@ -380,7 +424,9 @@ async def show_day_schedule(
         await callback.message.edit_text(get_text("choose_group", language), reply_markup=_groups_keyboard(groups))
         await callback.answer()
         return
-    lessons = await schedule_service.get_lessons(group_name=group_name, day=day)
+    profile = await schedule_service.get_user_profile(callback.from_user.id)
+    user_subgroup = profile.subgroup if profile else 0
+    lessons = await schedule_service.get_lessons(group_name=group_name, day=day, subgroup=user_subgroup)
     text = _render_schedule(group_name=group_name, day=day, lessons=lessons, language=language)
     await callback.message.edit_text(text, reply_markup=_student_home_keyboard(language, True))
     await callback.answer()

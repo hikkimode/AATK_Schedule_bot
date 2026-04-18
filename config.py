@@ -13,8 +13,9 @@ class Config(BaseSettings):
 
     bot_token: str = Field(alias="BOT_TOKEN")
     database_url: str = Field(default="sqlite+aiosqlite:///./schedule.db", alias="DATABASE_URL")
-    teacher_ids: list[int] = Field(default_factory=list, alias="TEACHER_IDS")
-    superadmin_ids: list[int] = Field(default_factory=list, alias="SUPERADMIN_IDS")
+    teacher_ids: str | list[int] = Field(default_factory=list, alias="TEACHER_IDS")
+    superadmin_ids: str | list[int] = Field(default_factory=list, alias="SUPERADMIN_IDS")
+    dashboard_api_key: str = Field(default="", alias="DASHBOARD_API_KEY")
 
     @field_validator("teacher_ids", "superadmin_ids", mode="before")
     @classmethod
@@ -25,6 +26,8 @@ class Config(BaseSettings):
             return [int(item.strip()) for item in value.split(",") if item.strip()]
         if isinstance(value, (list, tuple, set)):
             return [int(item) for item in value]
+        if isinstance(value, int):
+            return [value]
         raise ValueError("ID list must be a comma-separated string or a sequence of integers.")
 
 

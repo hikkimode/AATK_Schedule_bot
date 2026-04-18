@@ -13,9 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AuditLog, BaseSchedule, ScheduleV2, UserProfile
-from schemas.schedule import LessonItem
 from services.notification_service import NotificationService
-from services.notification_worker import NotificationEnqueuer
 
 
 logger = logging.getLogger(__name__)
@@ -61,36 +59,33 @@ class ScheduleService:
         order_map = {day: index for index, day in enumerate(DAY_ORDER)}
         return sorted(values, key=lambda item: order_map.get(item, len(order_map)))
 
-    async def get_lessons(self, group_name: str, day: str, subgroup: int = 0) -> list[LessonItem]:
+    async def get_lessons(self, group_name: str, day: str) -> list[Schedule]:
+        """
+        Retrieve lessons WITH priority-based logic:
+        1. Query ALL lessons for group+day (both master and override records)
+        2. Return sorted by lesson_number
+        
+        NOTE: This returns ALL records. Override records (is_change=True) should be
+        displayed alongside masters. The "priority" logic is handled by broadcast/admin,
+        not by filtering here.
+        """
         query = (
-            select(ScheduleV2)
+            select(Schedule)
             .where(ScheduleV2.group_name == group_name, ScheduleV2.day == day)
+            .order_by(Schedule.lesson_number)
         )
-        schedule_obj = await self._session.scalar(query)
-        if not schedule_obj or not schedule_obj.lessons:
-            return []
-            
-        lessons = [LessonItem.model_validate(item) for item in schedule_obj.lessons]
-        
-        # Filter by subgroup: 0 (all) + user's specific subgroup
-        if subgroup != 0:
-            lessons = [l for l in lessons if l.subgroup == 0 or l.subgroup == subgroup]
-        
-        return sorted(lessons, key=lambda x: x.num)
+        result = await self._session.scalars(query)
+        lessons = list(result)
+        logger.debug(f"get_lessons({group_name}, {day}): found {len(lessons)} records (masters + overrides)")
+        return lessons
 
-    async def get_lesson(self, group_name: str, day: str, lesson_number: int) -> LessonItem | None:
-        query = select(ScheduleV2).where(
+    async def get_lesson(self, group_name: str, day: str, lesson_number: int) -> Schedule | None:
+        query = select(Schedule).where(
             func.lower(func.trim(ScheduleV2.group_name)) == group_name.lower().strip(),
             func.lower(func.trim(ScheduleV2.day)) == day.lower().strip(),
+            Schedule.lesson_number == lesson_number,
         )
-        schedule_obj = await self._session.scalar(query)
-        if not schedule_obj or not schedule_obj.lessons:
-            return None
-            
-        for item in schedule_obj.lessons:
-            if item.get("num") == lesson_number:
-                return LessonItem.model_validate(item)
-        return None
+        return await self._session.scalar(query)
 
     async def get_user_profile(self, tg_id: int) -> UserProfile | None:
         # Telegram IDs are stored as BIGINT in the DB to support values above int32 range.
@@ -103,7 +98,6 @@ class ScheduleService:
         self,
         tg_id: int,
         group_name: str | None = None,
-        subgroup: int | None = None,
         language: str | None = None,
     ) -> UserProfile:
         # Always persist Telegram identifiers as 64-bit integers.
@@ -112,16 +106,13 @@ class ScheduleService:
             profile = UserProfile(
                 tg_id=tg_id,
                 group_name=group_name,
-                subgroup=subgroup or 0,
                 language=language or "ru",
             )
             self._session.add(profile)
-            logger.debug(f"save_user_profile({tg_id}): created new profile with subgroup={profile.subgroup}")
+            logger.debug(f"save_user_profile({tg_id}): created new profile")
         else:
             if group_name is not None:
                 profile.group_name = group_name
-            if subgroup is not None:
-                profile.subgroup = subgroup
             if language is not None:
                 profile.language = language
             profile.updated_at = datetime.utcnow()
@@ -176,28 +167,11 @@ class ScheduleService:
                 errors.append(f"Строка {row_number}: заполните group_name, day и lesson_number.")
                 continue
 
-            subject_raw = self._normalize_cell(row.get("subject"))
+            subject = self._normalize_cell(row.get("subject"))
             teacher = self._normalize_cell(row.get("teacher"))
             room = self._normalize_cell(row.get("room"))
             start_time_raw = self._normalize_cell(row.get("start_time"))
             end_time_raw = self._normalize_cell(row.get("end_time"))
-
-            # Subgroup detection from subject
-            subgroup = 0
-            subject = subject_raw
-            if subject_raw:
-                # Regex for: (1 подгр), 2 подгруппа, (1), 2гр etc.
-                match = re.search(r"\(?\s*([12])\s*(?:подгр|гр|п)[а-яё]*\.?\s*\)?", subject_raw, re.IGNORECASE)
-                if match:
-                    subgroup = int(match.group(1))
-                    # Clean name: "Physics (1 подгр)" -> "Physics"
-                    subject = re.sub(r"\(?\s*[12]\s*(?:подгр|гр|п)[а-яё]*\.?\s*\)?", "", subject_raw, flags=re.IGNORECASE).strip()
-                else:
-                    # Alternative: just a single digit in parens
-                    match_simple = re.search(r"\(\s*([12])\s*\)", subject_raw)
-                    if match_simple:
-                        subgroup = int(match_simple.group(1))
-                        subject = re.sub(r"\(\s*[12]\s*\)", "", subject_raw).strip()
 
             start_time = self._normalize_time(start_time_raw) if start_time_raw else "00:00:00"
             end_time = self._normalize_time(end_time_raw) if end_time_raw else "00:00:00"
@@ -261,7 +235,6 @@ class ScheduleService:
                 "start_time": start_time,
                 "end_time": end_time,
                 "raw_text": raw_text,
-                "subgroup": subgroup,
                 "is_change": is_changed,
             }
             data_list.append(data)
@@ -293,68 +266,32 @@ class ScheduleService:
                 ]
                 await self._session.execute(insert(BaseSchedule).values(base_data))
 
-            # Обновляем текущее расписание (ScheduleV2)
-            affected_groups = {d["group_name"] for d in data_list}
-            existing_schedules = await self._session.scalars(
-                select(ScheduleV2).where(ScheduleV2.group_name.in_(affected_groups))
+            # Обновляем текущее расписание (schedule)
+            stmt = insert(Schedule).values(data_list)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["group_name", "day", "lesson_number"],
+                set_={
+                    "subject": stmt.excluded.subject,
+                    "teacher": stmt.excluded.teacher,
+                    "room": stmt.excluded.room,
+                    "start_time": stmt.excluded.start_time,
+                    "end_time": stmt.excluded.end_time,
+                    "raw_text": stmt.excluded.raw_text,
+                    # CRITICAL FIX: Preserve is_change flag for existing records
+                    # Priority: existing is_change=True > new is_change=True > False
+                    "is_change": case(
+                        # Если существующая запись уже была изменением — сохраняем True
+                        (Schedule.is_change == True, True),
+                        # Если новые данные помечены как изменение — ставим True
+                        (stmt.excluded.is_change == True, True),
+                        # Иначе это базовое расписание
+                        else_=False
+                    ),
+                }
             )
-            schedules_map = {(s.group_name, s.day): s for s in existing_schedules}
-
-            # Группируем новые данные
-            import collections
-            grouped_new_data = collections.defaultdict(list)
-            for d in data_list:
-                grouped_new_data[(d["group_name"], d["day"])].append(d)
-
-            for key, new_lessons in grouped_new_data.items():
-                group_name, day = key
-                if key in schedules_map:
-                    # Обновляем существующий массив уроков
-                    s = schedules_map[key]
-                    existing_lessons = {item.get("num"): item for item in s.lessons}
-                    for new_d in new_lessons:
-                        num = new_d["lesson_number"]
-                        # Priority: existing is_change=True > new is_change=True > False
-                        old_is_change = False
-                        if num in existing_lessons:
-                            old_is_change = existing_lessons[num].get("is_change", False)
-                            
-                        existing_lessons[num] = {
-                            "num": num,
-                            "name": new_d["subject"],
-                            "teacher": new_d["teacher"],
-                            "room": new_d["room"],
-                            "time_start": new_d["start_time"],
-                            "time_end": new_d["end_time"],
-                            "is_change": old_is_change or new_d["is_change"],
-                            "subgroup": new_d["subgroup"],
-                            "is_published": True
-                        }
-                    s.lessons = list(existing_lessons.values())
-                    s.lessons.sort(key=lambda x: x.get("num", 0))
-                else:
-                    # Создаем новую запись для группы и дня
-                    lessons = [{
-                        "num": new_d["lesson_number"],
-                        "name": new_d["subject"],
-                        "teacher": new_d["teacher"],
-                        "room": new_d["room"],
-                        "time_start": new_d["start_time"],
-                        "time_end": new_d["end_time"],
-                        "is_change": new_d["is_change"],
-                        "subgroup": new_d["subgroup"],
-                        "is_published": True
-                    } for new_d in new_lessons]
-                    lessons.sort(key=lambda x: x.get("num", 0))
-                    
-                    new_sched = ScheduleV2(
-                        group_name=group_name,
-                        day=day,
-                        lessons=lessons
-                    )
-                    self._session.add(new_sched)
 
             try:
+                await self._session.execute(stmt)
 
                 # Log imported changes to audit trail (до commit, для атомарности)
                 for group_name, changes in changes_by_group.items():
@@ -377,16 +314,6 @@ class ScheduleService:
 
                 if changes_by_group:
                     logger.info(f"Audit logged {sum(len(v) for v in changes_by_group.values())} changes")
-                    
-                    # C3: Reactive Notifications Enqueue
-                    try:
-                        enqueuer = NotificationEnqueuer(self._session)
-                        enqueued = await enqueuer.enqueue_schedule_change_notifications(
-                            group_names=list(changes_by_group.keys())
-                        )
-                        logger.info(f"Reactive notifications enqueued: {enqueued}")
-                    except Exception as ne:
-                        logger.error(f"Failed to enqueue reactive notifications: {ne}")
             except Exception:
                 await self._session.rollback()
                 raise
@@ -628,8 +555,8 @@ class AuditService:
 
     async def _get_lesson(self, group_name: str, day: str, lesson_number: int) -> Schedule | None:
         query = select(Schedule).where(
-            Schedule.group_name == group_name,
-            Schedule.day == day,
+            ScheduleV2.group_name == group_name,
+            ScheduleV2.day == day,
             Schedule.lesson_number == lesson_number,
         )
         return await self._session.scalar(query)

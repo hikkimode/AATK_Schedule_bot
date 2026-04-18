@@ -165,36 +165,7 @@ async def log_audit_action(
     await session.commit()
 
 
-class ChangeResponse(BaseModel):
-    id: int
-    group_name: str | None
-    day: str | None
-    lesson_number: int | None
-    subject: str | None
-    teacher: str | None
-    room: str | None
-    start_time: str | None
-    end_time: str | None
-    raw_text: str | None
-    is_published: bool = False
-
-
-class ChangeCreateRequest(BaseModel):
-    group_name: str = Field(..., min_length=1)
-    subject: str = Field(..., min_length=1)
-    day: str = Field(..., min_length=1)
-    lesson_number: int = Field(..., ge=1, le=10)
-    teacher: str | None = None
-    room: str | None = None
-
-
-class ChangeUpdateRequest(BaseModel):
-    group_name: str | None = None
-    subject: str | None = None
-    day: str | None = None
-    lesson_number: int | None = Field(None, ge=1, le=10)
-    teacher: str | None = None
-    room: str | None = None
+from schemas.schedule import ChangeResponse, ChangeCreateRequest, ChangeUpdateRequest
 
 
 class BotStatsResponse(BaseModel):
@@ -217,6 +188,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[Any, None]:
     if _engine:
         await _engine.dispose()
 
+from api.dashboard_api import router as dashboard_router
 
 app = FastAPI(title="Schedule Bot API", lifespan=lifespan)
 
@@ -225,8 +197,10 @@ app.add_middleware(
     allow_origins=["https://aatk-schedule-bot.vercel.app"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Telegram-Init-Data"],
+    allow_headers=["Authorization", "Content-Type", "X-Telegram-Init-Data", "X-API-Key"],
 )
+
+app.include_router(dashboard_router)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

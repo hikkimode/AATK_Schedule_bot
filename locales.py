@@ -29,6 +29,12 @@ TRANSLATIONS = {
         "choose_day_button": "Выбрать день",
         "change_group": "Сменить группу",
         "choose_group_button": "Выбрать группу",
+        "choose_subgroup": "Выберите подгруппу.",
+        "subgroup_all": "Весь поток (общие)",
+        "subgroup_1": "1 подгруппа",
+        "subgroup_2": "2 подгруппа",
+        "subgroup_prefix": "Подгруппа",
+        "subgroup_none": "Не выбрана",
         
         # Quick Actions
         "today": "Сегодня",
@@ -99,6 +105,12 @@ TRANSLATIONS = {
         "choose_day_button": "Күнді таңдау",
         "change_group": "Топты өзгерту",
         "choose_group_button": "Топты таңдау",
+        "choose_subgroup": "Топшаны таңдаңыз.",
+        "subgroup_all": "Жалпы топ",
+        "subgroup_1": "1 топша",
+        "subgroup_2": "2 топша",
+        "subgroup_prefix": "Топша",
+        "subgroup_none": "Таңдалмаған",
         
         # Quick Actions
         "today": "Бүгін",

@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, Text, JSON
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -14,8 +16,8 @@ class Base(AsyncAttrs, DeclarativeBase):
 
 # Telegram identifiers (tg_id, chat_id, user_id) can exceed signed 32-bit range.
 # Use BIGINT for these columns in PostgreSQL to avoid out-of-range failures.
-class Schedule(Base):
-    __tablename__ = "schedule"
+class ScheduleLegacy(Base):
+    __tablename__ = "schedule_legacy"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -32,6 +34,34 @@ class Schedule(Base):
     updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # Optimistic locking: version field for conflict detection
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, 
+        nullable=False, 
+        default=datetime.now,
+        onupdate=datetime.now
+    )
+
+
+class ScheduleV2(Base):
+    """
+    Новая структура расписания (C-Tier) с использованием JSONB для гибкости.
+    Здесь `lessons` хранит массива словарей `LessonSchema`.
+    """
+    __tablename__ = "schedule_v2"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_name: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    day: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    
+    # Использование JSON с фоллбэком для SQLite, в проде будет JSONB.
+    # MutableList необходим для отслеживания изменений внутри массива
+    lessons: Mapped[list[dict]] = mapped_column(
+        MutableList.as_mutable(JSON().with_variant(JSONB, "postgresql")), 
+        default=list, 
+        nullable=False
+    )
+    
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, 
         nullable=False, 
@@ -81,6 +111,7 @@ class UserProfile(Base):
 
     tg_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subgroup: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     language: Mapped[str] = mapped_column(Text, nullable=False, default="ru", server_default="ru")
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.now)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")

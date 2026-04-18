@@ -6,6 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 class StudentStates(StatesGroup):
     language = State()
     group = State()
+    subgroup = State()
     day = State()
 
 

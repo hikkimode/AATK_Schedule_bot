@@ -17,12 +17,16 @@ def create_engine_and_sessionmaker(database_url: str) -> tuple[AsyncEngine, asyn
     """Create database engine and session factory with optimized settings."""
     global _engine, _session_factory
     
-    _engine = create_async_engine(
-        database_url,
-        connect_args={
+    connect_args = {}
+    if "postgresql" in database_url:
+        connect_args = {
             "prepared_statement_cache_size": 0,
             "statement_cache_size": 0
-        },
+        }
+        
+    _engine = create_async_engine(
+        database_url,
+        connect_args=connect_args,
         pool_pre_ping=True,
         pool_recycle=300,
         pool_size=10,
@@ -70,6 +74,31 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         raise
     finally:
         await session.close()
+
+
+class _AsyncSessionLocalProxy:
+    """
+    Lazy callable proxy for the global async session factory.
+
+    Usage::
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(...)
+
+    Services can import this at module-level without worrying about
+    initialization order — the real factory is resolved at call-time.
+    """
+
+    def __call__(self) -> AsyncSession:
+        if _session_factory is None:
+            raise RuntimeError(
+                "Database not initialized. Call create_engine_and_sessionmaker first."
+            )
+        return _session_factory()
+
+
+# Public alias used by services (e.g. alert_service.py)
+AsyncSessionLocal = _AsyncSessionLocalProxy()
 
 
 async def health_check() -> bool:

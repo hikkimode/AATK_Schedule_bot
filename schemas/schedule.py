@@ -10,50 +10,41 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class LessonSchema(BaseModel):
-    """Schema for a single lesson."""
-    model_config = ConfigDict(from_attributes=True)
-    
-    number: int = Field(..., ge=1, le=10, description="Номер пары (1-10)")
-    subject: Optional[str] = Field(None, max_length=200, description="Название предмета")
+class LessonItem(BaseModel):
+    """Schema for a single lesson in JSONB array."""
+    num: int = Field(..., ge=1, le=10, description="Номер пары (1-10)")
+    name: Optional[str] = Field(None, max_length=200, description="Название предмета")
     teacher: Optional[str] = Field(None, max_length=100, description="ФИО преподавателя")
     room: Optional[str] = Field(None, max_length=20, description="Номер аудитории")
-    start_time: Optional[str] = Field(None, pattern=r"^\d{2}:\d{2}$", description="Время начала (HH:MM)")
-    end_time: Optional[str] = Field(None, pattern=r"^\d{2}:\d{2}$", description="Время окончания (HH:MM)")
+    time_start: Optional[str] = Field(None, pattern=r"^\d{1,2}:\d{2}$", description="Время начала (HH:MM)")
+    time_end: Optional[str] = Field(None, pattern=r"^\d{1,2}:\d{2}$", description="Время окончания (HH:MM)")
+    is_change: bool = Field(default=False, description="Является ли заменой")
+    subgroup: int = Field(default=0, ge=0, le=2, description="Подгруппа (0-общая, 1-первая, 2-вторая)")
+    is_published: bool = Field(default=True, description="Опубликовано ли")
     
-    @field_validator("subject", "teacher", "room")
+    @field_validator("name", "teacher", "room")
     @classmethod
     def strip_whitespace(cls, v: Optional[str]) -> Optional[str]:
-        """Strip whitespace from string fields."""
         if v is not None:
             return v.strip() or None
         return v
 
 
 class ScheduleSchema(BaseModel):
-    """Schema for schedule record validation."""
+    """Schema for V2 schedule record validation (array of lessons for a day)."""
     model_config = ConfigDict(from_attributes=True)
     
     id: int
-    group_name: Optional[str] = Field(None, max_length=50, description="Название группы")
-    day: Optional[str] = Field(None, pattern=r"^(Пн|Вт|Ср|Чт|Пт|Сб|Пн|Вт|Ср|Чт|Пт|Сб)$", description="День недели")
-    lesson_number: Optional[int] = Field(None, ge=1, le=10, description="Номер пары")
-    subject: Optional[str] = Field(None, max_length=200)
-    teacher: Optional[str] = Field(None, max_length=100)
-    room: Optional[str] = Field(None, max_length=20)
-    start_time: Optional[str] = Field(None, pattern=r"^\d{2}:\d{2}$")
-    end_time: Optional[str] = Field(None, pattern=r"^\d{2}:\d{2}$")
-    is_change: bool = Field(default=False, description="Является ли заменой")
-    is_published: bool = Field(default=False, description="Опубликовано ли")
-    updated_by: Optional[int] = Field(None, description="ID пользователя, внесшего изменения")
+    group_name: str = Field(..., max_length=50, description="Название группы")
+    day: str = Field(..., description="День недели")
+    lessons: list[LessonItem] = Field(default_factory=list, description="Список уроков на день")
+    version: int = Field(default=1)
+    updated_at: datetime
     
-    @field_validator("group_name", "subject", "teacher", "room", "day")
+    @field_validator("group_name", "day")
     @classmethod
-    def strip_whitespace(cls, v: Optional[str]) -> Optional[str]:
-        """Strip whitespace from string fields."""
-        if v is not None:
-            return v.strip() or None
-        return v
+    def strip_whitespace(cls, v: str) -> str:
+        return v.strip()
 
 
 class AuditLogSchema(BaseModel):
@@ -78,6 +69,7 @@ class UserProfileSchema(BaseModel):
     
     tg_id: int = Field(..., gt=0)
     group_name: Optional[str] = Field(None, max_length=50)
+    subgroup: int = Field(default=0, ge=0, le=2)
     language: str = Field(default="ru", pattern=r"^(ru|en)$")
     is_active: bool = Field(default=True)
     updated_at: datetime
@@ -119,7 +111,40 @@ class BroadcastRequestSchema(BaseModel):
 class ScheduleUpdatePayloadSchema(BaseModel):
     """Schema for schedule update webhook payload."""
     group_name: str = Field(..., min_length=1, max_length=50)
-    day: Optional[str] = Field(None, pattern=r"^(Пн|Вт|Ср|Чт|Пт|Сб)$")
-    changes: list[dict] = Field(default_factory=list, description="Список изменений")
+    day: Optional[str] = Field(None, pattern=r"^(Пн|Вт|Ср|Чт|Пт|Сб|Воскресенье)$")
+    subgroup: Optional[int] = Field(None, ge=0, le=2, description="Target subgroup if specific")
+    changes: list[dict] = Field(default_factory=list, description="List of LessonItem dicts that changed")
     updated_by: Optional[int] = Field(None, gt=0)
     timestamp: datetime = Field(default_factory=datetime.now)
+
+
+class ChangeResponse(BaseModel):
+    id: int
+    group_name: Optional[str]
+    day: Optional[str]
+    lesson_number: Optional[int]
+    subject: Optional[str]
+    teacher: Optional[str]
+    room: Optional[str]
+    start_time: Optional[str]
+    end_time: Optional[str]
+    raw_text: Optional[str]
+    is_published: bool = False
+
+
+class ChangeCreateRequest(BaseModel):
+    group_name: str = Field(..., min_length=1)
+    subject: str = Field(..., min_length=1)
+    day: str = Field(..., min_length=1)
+    lesson_number: int = Field(..., ge=1, le=10)
+    teacher: Optional[str] = None
+    room: Optional[str] = None
+
+
+class ChangeUpdateRequest(BaseModel):
+    group_name: Optional[str] = None
+    subject: Optional[str] = None
+    day: Optional[str] = None
+    lesson_number: Optional[int] = Field(None, ge=1, le=10)
+    teacher: Optional[str] = None
+    room: Optional[str] = None

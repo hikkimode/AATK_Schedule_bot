@@ -17,7 +17,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from locales import get_text
-from models import NotificationQueue, NotificationStatus, Schedule, UserProfile
+from models import NotificationQueue, NotificationStatus, ScheduleV2, UserProfile
+from schemas.schedule import LessonItem
 
 
 class NotificationWorker:
@@ -249,24 +250,24 @@ class NotificationEnqueuer:
     async def enqueue_schedule_change_notifications(
         self, 
         group_names: list[str],
+        day: str | None = None,
     ) -> int:
         """Create notification queue entries for all users in specified groups.
         
         Args:
             group_names: List of group names that had schedule changes
+            day: Optional day to filter changes
             
         Returns:
             Number of notifications enqueued
         """
-        from sqlalchemy import func
-        
         if not group_names:
             return 0
         
         total_enqueued = 0
         
         for group_name in group_names:
-            # Get all active users subscribed to this group
+            # 1. Get all active users for this group
             user_query = select(UserProfile).where(
                 UserProfile.group_name == group_name,
                 UserProfile.is_active == True
@@ -278,36 +279,69 @@ class NotificationEnqueuer:
                 logger.info(f"No active users found for group {group_name}")
                 continue
             
-            # Get published changes for this group
-            changes_query = select(Schedule).where(
-                Schedule.group_name == group_name,
-                Schedule.is_change == True,
-                Schedule.is_published == True
-            )
-            changes_result = await self._session.execute(changes_query)
-            changes = changes_result.scalars().all()
+            # 2. Get ScheduleV2 records for this group (and day if provided)
+            sched_query = select(ScheduleV2).where(ScheduleV2.group_name == group_name)
+            if day:
+                sched_query = sched_query.where(ScheduleV2.day == day)
             
-            if not changes:
-                logger.info(f"No published changes for group {group_name}")
+            sched_result = await self._session.execute(sched_query)
+            schedules = sched_result.scalars().all()
+            
+            if not schedules:
+                logger.debug(f"No schedule found for group {group_name}")
                 continue
-            
-            # Create personalized message for each user based on their language
+
+            # 3. Create personalized notifications per user
             for user in users:
                 language = user.language or "ru"
+                user_subgroup = user.subgroup
+                
+                # Filter lessons that are marked as change AND relevant to this user's subgroup
+                relevant_changes: dict[str, list[dict]] = {}
+                
+                for s in schedules:
+                    day_name = s.day
+                    changed_lessons = []
+                    for lesson_dict in s.lessons:
+                        # Extract flags
+                        is_change = lesson_dict.get("is_change", False)
+                        l_subgroup = lesson_dict.get("subgroup", 0)
+                        
+                        if not is_change:
+                            continue
+                            
+                        # Subgroup logic:
+                        # 0 (All) -> sees 0, 1, 2
+                        # 1 -> sees 0, 1
+                        # 2 -> sees 0, 2
+                        is_relevant = False
+                        if user_subgroup == 0:
+                            is_relevant = True
+                        elif l_subgroup == 0 or l_subgroup == user_subgroup:
+                            is_relevant = True
+                            
+                        if is_relevant:
+                            changed_lessons.append(lesson_dict)
+                    
+                    if changed_lessons:
+                        relevant_changes[day_name] = sorted(changed_lessons, key=lambda x: x.get("num", 0))
+
+                if not relevant_changes:
+                    continue
+
                 message = self._build_notification_message(
-                    group_name, changes, language
+                    group_name, relevant_changes, language
                 )
                 
-                # Check if similar notification already pending (deduplication)
+                # deduplication check
                 existing_query = select(NotificationQueue).where(
                     NotificationQueue.user_id == user.tg_id,
-                    NotificationQueue.group_name == group_name,
                     NotificationQueue.status == NotificationStatus.PENDING.value,
                     NotificationQueue.message_text == message
                 )
                 existing_result = await self._session.execute(existing_query)
                 if existing_result.scalar_one_or_none():
-                    continue  # Skip duplicate
+                    continue
                 
                 notification = NotificationQueue(
                     user_id=user.tg_id,
@@ -319,7 +353,7 @@ class NotificationEnqueuer:
                 self._session.add(notification)
                 total_enqueued += 1
             
-            logger.info(f"Enqueued {len(users)} notifications for group {group_name}")
+            logger.info(f"Enqueued {total_enqueued} notifications for group {group_name}")
         
         await self._session.flush()
         return total_enqueued
@@ -327,7 +361,7 @@ class NotificationEnqueuer:
     def _build_notification_message(
         self, 
         group_name: str, 
-        changes: list[Schedule], 
+        changes_by_day: dict[str, list[dict]], 
         language: str
     ) -> str:
         """Build localized notification message for schedule changes."""
@@ -338,37 +372,34 @@ class NotificationEnqueuer:
         teacher_text = get_text("notification_teacher", language)
         room_text = get_text("notification_room", language)
         time_text = get_text("notification_time", language)
+        subgroup_prefix = get_text("subgroup_prefix", language)
         
         lines = [
-            f"🔔 <b>{title}</b>",
-            f"👥 <b>{group_text}:</b> {group_name}",
+            f"<b>{title}</b>",
+            f"<b>{group_text}:</b> {group_name}",
             "",
             f"📋 <b>{'Изменения' if language == 'ru' else 'Өзгерістер'}:</b>",
         ]
         
-        # Group changes by day for better readability
-        changes_by_day: dict[str, list[Schedule]] = {}
-        for change in changes:
-            day = change.day or ""
-            if day not in changes_by_day:
-                changes_by_day[day] = []
-            changes_by_day[day].append(change)
-        
-        for day, day_changes in changes_by_day.items():
+        for day, lessons in changes_by_day.items():
             lines.append(f"\n📅 <b>{day}:</b>")
-            for change in day_changes:
-                start_time = change.start_time or "—"
-                end_time = change.end_time or "—"
+            for l in lessons:
+                start_time = l.get("time_start") or "—"
+                end_time = l.get("time_end") or "—"
+                subgroup = l.get("subgroup", 0)
+                subgroup_label = f" ({subgroup} {subgroup_prefix.lower()})" if subgroup != 0 else ""
+                
                 lines.append(
-                    f"  <b>{change.lesson_number}</b> ({start_time}-{end_time}): "
-                    f"{change.subject or '—'}"
+                    f"  <b>{l.get('num')}</b> ({start_time}-{end_time}){subgroup_label}: "
+                    f"{l.get('name') or '—'}"
                 )
-                if change.teacher:
-                    lines.append(f"    👤 {change.teacher}")
-                if change.room:
-                    lines.append(f"    🚪 {change.room}")
+                if l.get("teacher"):
+                    lines.append(f"    👤 {l.get('teacher')}")
+                if l.get("room"):
+                    lines.append(f"    🚪 {l.get('room')}")
         
         lines.append("")
-        lines.append(f"🕒 <b>{get_text('last_updated', language)}:</b> {datetime.now().strftime('%H:%M')}")
+        timestamp = datetime.now().strftime('%H:%M')
+        lines.append(f"🕒 <b>{get_text('last_updated', language)}:</b> {timestamp}")
         
         return "\n".join(lines)
