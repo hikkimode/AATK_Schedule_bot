@@ -11,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Schedule
+from models import ScheduleV2
 
 T = TypeVar("T")
 
@@ -55,8 +55,8 @@ async def update_schedule_with_optimistic_lock(
     """
     # Fetch current record with version check
     result = await session.execute(
-        select(Schedule).where(
-            Schedule.id == schedule_id
+        select(ScheduleV2).where(
+            ScheduleV2.id == schedule_id
         )
     )
     schedule = result.scalar_one_or_none()
@@ -99,19 +99,19 @@ async def update_schedule_with_optimistic_lock(
 async def get_schedule_with_version(
     session: AsyncSession,
     schedule_id: int
-) -> tuple[Schedule | None, int]:
+) -> tuple[ScheduleV2 | None, int]:
     """
     Get schedule record with its current version.
-    
+
     Returns:
         Tuple of (schedule_record, version)
     """
     result = await session.execute(
-        select(Schedule).where(Schedule.id == schedule_id)
+        select(ScheduleV2).where(ScheduleV2.id == schedule_id)
     )
     schedule = result.scalar_one_or_none()
-    
+
     if schedule is None:
         return None, 0
-    
+
     return schedule, schedule.version

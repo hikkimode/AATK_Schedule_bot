@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from models import Schedule
+from models import ScheduleV2 as Schedule
 
 async def migrate_schedule():
     # 1. Проверка локальной базы

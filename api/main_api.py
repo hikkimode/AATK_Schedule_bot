@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError, DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from database import create_engine_and_sessionmaker
-from models import AuditLog, NotificationQueue, NotificationStatus, Schedule, UserProfile
+from models import AuditLog, NotificationQueue, NotificationStatus, ScheduleV2, UserProfile
 from services.notification_worker import NotificationEnqueuer
 from utils.exceptions import setup_logging
 
@@ -229,33 +229,33 @@ async def get_schedule_changes(
             if user and user.id in _superadmin_ids:
                 is_admin = True
     
-    # Build query: admins see all, regular users see only published
-    if is_admin:
-        query = select(Schedule).where(Schedule.is_change == True)
-    else:
-        query = select(Schedule).where(
-            Schedule.is_change == True,
-            Schedule.is_published == True
-        )
-    
-    result = await session.execute(query)
-    changes = result.scalars().all()
-    return [
-        ChangeResponse(
-            id=c.id,
-            group_name=c.group_name,
-            day=c.day,
-            lesson_number=c.lesson_number,
-            subject=c.subject,
-            teacher=c.teacher,
-            room=c.room,
-            start_time=c.start_time,
-            end_time=c.end_time,
-            raw_text=c.raw_text,
-            is_published=c.is_published,
-        )
-        for c in changes
-    ]
+    # Build query from ScheduleV2 JSONB lessons
+    result = await session.execute(select(ScheduleV2))
+    schedules = result.scalars().all()
+
+    changes: list[ChangeResponse] = []
+    for s in schedules:
+        for lesson in s.lessons:
+            if not lesson.get("is_change"):
+                continue
+            if not is_admin and not lesson.get("is_published"):
+                continue
+            changes.append(
+                ChangeResponse(
+                    id=s.id,
+                    group_name=s.group_name,
+                    day=s.day,
+                    lesson_number=lesson.get("num"),
+                    subject=lesson.get("name"),
+                    teacher=lesson.get("teacher"),
+                    room=lesson.get("room"),
+                    start_time=lesson.get("time_start"),
+                    end_time=lesson.get("time_end"),
+                    raw_text=None,
+                    is_published=lesson.get("is_published", False),
+                )
+            )
+    return changes
 
 
 @app.get("/bot/stats", response_model=BotStatsResponse)
@@ -286,78 +286,67 @@ async def create_change(
     user: TelegramUser = Depends(require_admin)
 ) -> ChangeResponse:
     try:
-        raw_text = request.group_name + " | " + request.day + " | " + str(request.lesson_number) + " | " + request.subject
-        if request.teacher:
-            raw_text = raw_text + " | " + request.teacher
-        if request.room:
-            raw_text = raw_text + " | " + request.room
+        # Find or create ScheduleV2 row for this group+day
+        sched_q = select(ScheduleV2).where(
+            ScheduleV2.group_name == request.group_name,
+            ScheduleV2.day == request.day,
+        )
+        sched_result = await session.execute(sched_q)
+        sched = sched_result.scalar_one_or_none()
 
-        # Auto-fill time based on lesson number
         start_time, end_time = get_lesson_times(request.lesson_number)
+        lesson_dict = {
+            "num": request.lesson_number,
+            "name": request.subject,
+            "teacher": request.teacher,
+            "room": request.room,
+            "time_start": start_time,
+            "time_end": end_time,
+            "is_change": True,
+            "is_published": False,
+            "subgroup": 0,
+        }
 
-        # Build insert statement with upsert on conflict
-        # If unique_lesson_idx conflict (group_name, day, lesson_number), update existing record
-        insert_stmt = pg_insert(Schedule).values(
-            group_name=request.group_name,
-            subject=request.subject,
-            day=request.day,
-            lesson_number=request.lesson_number,
-            teacher=request.teacher,
-            room=request.room,
-            start_time=start_time,
-            end_time=end_time,
-            raw_text=raw_text,
-            is_change=True,
-            is_published=False,  # Reset to draft on conflict
-            updated_by=user.id,
-        ).on_conflict_do_update(
-            index_elements=["group_name", "day", "lesson_number"],  # Matches unique_lesson_idx
-            set_={
-                "subject": request.subject,
-                "teacher": request.teacher,
-                "room": request.room,
-                "start_time": start_time,
-                "end_time": end_time,
-                "raw_text": raw_text,
-                "is_change": True,
-                "is_published": False,  # Reset to draft on update
-                "updated_by": user.id,
-            }
-        )
+        if sched:
+            lessons = list(sched.lessons)
+            # Replace existing lesson with same num or append
+            idx = next((i for i, l in enumerate(lessons) if l.get("num") == request.lesson_number), None)
+            old_value = str(lessons[idx]) if idx is not None else None
+            if idx is not None:
+                lessons[idx] = lesson_dict
+            else:
+                lessons.append(lesson_dict)
+            sched.lessons = sorted(lessons, key=lambda x: x.get("num", 0))
+        else:
+            old_value = None
+            sched = ScheduleV2(
+                group_name=request.group_name,
+                day=request.day,
+                lessons=[lesson_dict],
+            )
+            session.add(sched)
 
-        result = await session.execute(insert_stmt)
         await session.commit()
+        await session.refresh(sched)
 
-        # Get the inserted/updated record
-        # Fetch the record by unique key to return it
-        query = select(Schedule).where(
-            Schedule.group_name == request.group_name,
-            Schedule.day == request.day,
-            Schedule.lesson_number == request.lesson_number
-        )
-        result = await session.execute(query)
-        change = result.scalar_one()
-
-        # Log audit (differentiate between create and update)
-        action = "UPSERT"  # Could be CREATE or UPDATE depending on conflict
         await log_audit_action(
-            session, user, action,
+            session, user, "UPSERT",
             request.group_name, request.day, request.lesson_number,
-            None, raw_text
+            old_value, str(lesson_dict),
         )
 
         return ChangeResponse(
-            id=change.id,
-            group_name=change.group_name,
-            day=change.day,
-            lesson_number=change.lesson_number,
-            subject=change.subject,
-            teacher=change.teacher,
-            room=change.room,
-            start_time=change.start_time,
-            end_time=change.end_time,
-            raw_text=change.raw_text,
-            is_published=change.is_published,
+            id=sched.id,
+            group_name=sched.group_name,
+            day=sched.day,
+            lesson_number=lesson_dict["num"],
+            subject=lesson_dict["name"],
+            teacher=lesson_dict["teacher"],
+            room=lesson_dict["room"],
+            start_time=lesson_dict["time_start"],
+            end_time=lesson_dict["time_end"],
+            raw_text=None,
+            is_published=lesson_dict["is_published"],
         )
     except IntegrityError as e:
         await session.rollback()
@@ -377,55 +366,64 @@ async def update_change(
     user: TelegramUser = Depends(require_admin)
 ) -> ChangeResponse:
     try:
-        query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
-        result = await session.execute(query)
-        change = result.scalar_one_or_none()
+        # Find the ScheduleV2 row containing this lesson
+        sched_q = select(ScheduleV2).where(ScheduleV2.id == change_id)
+        result = await session.execute(sched_q)
+        sched = result.scalar_one_or_none()
 
-        if change is None:
+        if sched is None:
             raise HTTPException(status_code=404, detail="Change not found")
-
-        # Store old value for audit
-        old_value = change.raw_text
 
         update_data = request.model_dump(exclude_unset=True)
 
-        # Auto-fill time if lesson_number is being updated
-        if "lesson_number" in update_data and update_data["lesson_number"]:
-            lesson_num = update_data["lesson_number"]
+        # Auto-fill time if lesson_number updated
+        lesson_num = update_data.get("lesson_number")
+        if lesson_num:
             start_time, end_time = get_lesson_times(lesson_num)
-            # Only update time if current time is empty or we're explicitly changing it
             if not update_data.get("start_time") and start_time:
                 update_data["start_time"] = start_time
             if not update_data.get("end_time") and end_time:
                 update_data["end_time"] = end_time
 
-        # Always set updated_by
-        update_data["updated_by"] = user.id
+        lessons = list(sched.lessons)
+        # Find the first changed lesson to update (or last lesson if none found)
+        target_idx = next((i for i, l in enumerate(lessons) if l.get("is_change")), 0)
+        old_value = str(lessons[target_idx]) if lessons else None
 
-        if update_data:
-            stmt = update(Schedule).where(Schedule.id == change_id).values(**update_data)
-            await session.execute(stmt)
-            await session.commit()
-            await session.refresh(change)
+        field_map = {
+            "subject": "name",
+            "lesson_number": "num",
+            "start_time": "time_start",
+            "end_time": "time_end",
+        }
+        for api_field, value in update_data.items():
+            jsonb_field = field_map.get(api_field, api_field)
+            if target_idx < len(lessons):
+                lessons[target_idx][jsonb_field] = value
 
-            # Log audit
-            await log_audit_action(
-                session, user, "UPDATE",
-                change.group_name or "", change.day or "", change.lesson_number or 0,
-                old_value, change.raw_text
-            )
+        sched.lessons = lessons
+        await session.commit()
+        await session.refresh(sched)
+
+        lesson = sched.lessons[target_idx] if sched.lessons else {}
+
+        await log_audit_action(
+            session, user, "UPDATE",
+            sched.group_name, sched.day, lesson.get("num", 0),
+            old_value, str(lesson),
+        )
 
         return ChangeResponse(
-            id=change.id,
-            group_name=change.group_name,
-            day=change.day,
-            lesson_number=change.lesson_number,
-            subject=change.subject,
-            teacher=change.teacher,
-            room=change.room,
-            start_time=change.start_time,
-            end_time=change.end_time,
-            raw_text=change.raw_text,
+            id=sched.id,
+            group_name=sched.group_name,
+            day=sched.day,
+            lesson_number=lesson.get("num"),
+            subject=lesson.get("name"),
+            teacher=lesson.get("teacher"),
+            room=lesson.get("room"),
+            start_time=lesson.get("time_start"),
+            end_time=lesson.get("time_end"),
+            raw_text=None,
         )
     except IntegrityError as e:
         await session.rollback()
@@ -444,27 +442,33 @@ async def delete_change(
     user: TelegramUser = Depends(require_admin)
 ) -> dict[str, str]:
     try:
-        query = select(Schedule).where(Schedule.id == change_id, Schedule.is_change == True)
-        result = await session.execute(query)
-        change = result.scalar_one_or_none()
+        sched_q = select(ScheduleV2).where(ScheduleV2.id == change_id)
+        result = await session.execute(sched_q)
+        sched = result.scalar_one_or_none()
 
-        if change is None:
+        if sched is None:
             raise HTTPException(status_code=404, detail="Change not found")
 
-        # Store data for audit
-        group_name = change.group_name or ""
-        day = change.day or ""
-        lesson_num = change.lesson_number or 0
-        old_value = change.raw_text
+        group_name = sched.group_name
+        day = sched.day
+        # Find the changed lesson slot
+        lessons = list(sched.lessons)
+        target_idx = next((i for i, l in enumerate(lessons) if l.get("is_change")), None)
+        if target_idx is not None:
+            old_value = str(lessons[target_idx])
+            lesson_num = lessons[target_idx].get("num", 0)
+            lessons[target_idx]["is_change"] = False  # Soft-delete: mark as resolved
+            sched.lessons = lessons
+        else:
+            old_value = None
+            lesson_num = 0
 
-        await session.delete(change)
         await session.commit()
 
-        # Log audit
         await log_audit_action(
             session, user, "DELETE",
             group_name, day, lesson_num,
-            old_value, None
+            old_value, None,
         )
 
         return {"message": "Change deleted successfully"}
@@ -484,18 +488,27 @@ async def clear_all_changes(
     user: TelegramUser = Depends(require_admin)
 ) -> dict[str, str]:
     try:
-        stmt = delete(Schedule).where(Schedule.is_change == True)
-        result = await session.execute(stmt)
+        # Clear all 'is_change' flags in ScheduleV2 lessons
+        result = await session.execute(select(ScheduleV2))
+        schedules = result.scalars().all()
+        cleared = 0
+        for s in schedules:
+            new_lessons = []
+            for l in s.lessons:
+                if l.get("is_change"):
+                    cleared += 1
+                    l = {**l, "is_change": False, "is_published": False}
+                new_lessons.append(l)
+            s.lessons = new_lessons
         await session.commit()
 
-        # Log audit
         await log_audit_action(
             session, user, "CLEAR_ALL",
             "ALL", "ALL", 0,
-            "All changes", "Cleared"
+            f"{cleared} changes", "Cleared",
         )
 
-        return {"message": "All changes cleared", "deleted_count": str(result.rowcount)}
+        return {"message": "All changes cleared", "deleted_count": str(cleared)}
     except IntegrityError as e:
         await session.rollback()
         logger.error(f"Database integrity error: {e}")
@@ -562,25 +575,26 @@ async def publish_all_changes(
 ) -> dict[str, Any]:
     """Publish all unpublished schedule changes and enqueue notifications."""
     try:
-        # First, find which groups will be affected (for notifications)
-        affected_groups_query = (
-            select(Schedule.group_name)
-            .where(Schedule.is_change == True, Schedule.is_published == False)
-            .distinct()
-        )
-        groups_result = await session.execute(affected_groups_query)
-        affected_groups = [g for g in groups_result.scalars().all() if g]
-        
-        # Update all unpublished changes to published
-        stmt = (
-            update(Schedule)
-            .where(Schedule.is_change == True, Schedule.is_published == False)
-            .values(is_published=True, updated_by=user.id)
-        )
-        result = await session.execute(stmt)
-        await session.flush()  # Flush to get the changes but keep transaction open
+        # Find all ScheduleV2 rows with unpublished changes
+        result_q = await session.execute(select(ScheduleV2))
+        schedules = result_q.scalars().all()
 
-        published_count = result.rowcount
+        affected_groups: list[str] = []
+        published_count = 0
+        for s in schedules:
+            new_lessons = []
+            changed = False
+            for l in s.lessons:
+                if l.get("is_change") and not l.get("is_published"):
+                    l = {**l, "is_published": True}
+                    published_count += 1
+                    changed = True
+                new_lessons.append(l)
+            if changed:
+                s.lessons = new_lessons
+                if s.group_name and s.group_name not in affected_groups:
+                    affected_groups.append(s.group_name)
+        await session.flush()
         
         # Enqueue notifications for affected groups
         enqueued_count = 0

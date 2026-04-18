@@ -21,7 +21,7 @@ from handlers.teacher import router as teacher_router
 from middlewares.activity_middleware import ActivityMiddleware
 from middlewares.debounce import DebounceMiddleware, RateLimitMiddleware
 from middlewares.role_middleware import RoleMiddleware, ServiceMiddleware
-from models import AuditLog, NotificationQueue, Schedule, UserProfile
+from models import AuditLog, NotificationQueue, ScheduleV2, UserProfile
 from services.alert_service import AdminAlertService
 from services.notification_worker import NotificationWorker
 from utils.exceptions import setup_exception_handlers, setup_logging
@@ -165,7 +165,7 @@ async def main() -> None:
     config = load_config()
 
     # Import all models so SQLAlchemy can discover them before create_all
-    _ = (Schedule, AuditLog, UserProfile, NotificationQueue)
+    _ = (ScheduleV2, AuditLog, UserProfile, NotificationQueue)
 
     # Initialize DB (sets global _engine and _session_factory)
     engine, session_factory = create_engine_and_sessionmaker(config.database_url)

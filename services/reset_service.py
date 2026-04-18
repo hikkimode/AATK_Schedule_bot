@@ -7,7 +7,7 @@ from loguru import logger
 from sqlalchemy import delete, select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import AuditLog, BaseSchedule, Schedule
+from models import AuditLog, BaseSchedule, ScheduleV2
 
 
 class ResetService:
@@ -27,24 +27,16 @@ class ResetService:
             raise ValueError("Base schedule not found. Import primary Excel first.")
 
         current_count = await self._session.scalar(
-            select(func.count(Schedule.id))
+            select(func.count(ScheduleV2.id))
         ) or 0
 
         try:
-            await self._session.execute(delete(Schedule))
-
-            await self._session.execute(
-                text("""
-                    INSERT INTO schedule (
-                        group_name, day, lesson_number, subject, teacher,
-                        room, start_time, end_time, raw_text, is_change
-                    )
-                    SELECT
-                        group_name, day, lesson_number, subject, teacher,
-                        room, start_time, end_time, raw_text, 0
-                    FROM base_schedule
-                """)
-            )
+            # Soft-clear: remove all is_change flags from schedule_v2
+            result_q = await self._session.execute(select(ScheduleV2))
+            schedules = result_q.scalars().all()
+            for s in schedules:
+                s.lessons = []
+            await self._session.flush()
 
             audit_log = AuditLog(
                 tg_id=tg_id,

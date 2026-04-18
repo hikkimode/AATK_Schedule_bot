@@ -18,7 +18,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locales import get_text
-from models import Schedule
+from models import ScheduleV2
 from schemas.lesson import LessonImportSchema
 from services.ocr_service import OCRResult, OCRService, ParsedScheduleItem
 
@@ -199,7 +199,6 @@ async def ocr_confirm_save(
     # Get stored data from FSM
     state_data = await state.get_data()
     items_data: list[dict[str, Any]] = state_data.get(OCR_DATA_KEY, [])
-    preview_message_id: int | None = state_data.get(OCR_MESSAGE_KEY)
     
     if not items_data:
         await callback.answer("❌ Данные не найдены", show_alert=True)
@@ -209,49 +208,38 @@ async def ocr_confirm_save(
     await callback.answer("💾 Сохранение...")
     
     try:
-        # Prepare data for bulk insert as changes (drafts)
-        schedule_data: list[dict[str, Any]] = []
+        # Prepare data for ScheduleV2 (grouped by group+day)
+        grouped_data: dict[tuple[str, str], list[dict[str, Any]]] = {}
         errors: list[str] = []
         
         for idx, item in enumerate(items_data):
-            # Validate required fields
-            if not item.get("group_name"):
-                errors.append(f"Запись {idx+1}: не указана группа")
-                continue
-            if not item.get("day"):
-                errors.append(f"Запись {idx+1}: не указан день")
-                continue
-            if not item.get("lesson_number"):
-                errors.append(f"Запись {idx+1}: не указан номер пары")
+            g_name = item.get("group_name")
+            day = item.get("day")
+            if not g_name or not day:
+                errors.append(f"Запись {idx+1}: не указана группа или день")
                 continue
             
-            # Build raw_text
-            subj = item.get("subject") or ""
-            teach = item.get("teacher") or ""
-            rm = item.get("room") or ""
-            raw_text = f"{subj}\n({teach})   {rm}" if subj or teach or rm else ""
-            
-            # Get times
             lesson_num = item.get("lesson_number", 1)
             lesson_times = OCRService.LESSON_TIMES.get(lesson_num, ("", ""))
             
-            schedule_item = {
-                "group_name": item.get("group_name"),
-                "day": item.get("day"),
-                "lesson_number": lesson_num,
-                "subject": item.get("subject"),
+            lesson_entry = {
+                "num": lesson_num,
+                "name": item.get("subject"),
                 "teacher": item.get("teacher"),
                 "room": item.get("room"),
-                "start_time": item.get("start_time") or lesson_times[0],
-                "end_time": item.get("end_time") or lesson_times[1],
-                "raw_text": raw_text,
-                "is_change": True,  # Mark as change
-                "is_published": False,  # Save as draft
-                "updated_by": callback.from_user.id,
+                "time_start": item.get("start_time") or lesson_times[0],
+                "time_end": item.get("end_time") or lesson_times[1],
+                "is_change": True,
+                "is_published": False,
+                "subgroup": 0,
             }
-            schedule_data.append(schedule_item)
-        
-        if not schedule_data:
+            
+            key = (g_name, day)
+            if key not in grouped_data:
+                grouped_data[key] = []
+            grouped_data[key].append(lesson_entry)
+            
+        if not grouped_data:
             await callback.message.edit_text(
                 f"❌ <b>Ошибка сохранения</b>\n\n"
                 f"Нет валидных данных для сохранения:\n" + "\n".join(errors[:5]),
@@ -259,61 +247,54 @@ async def ocr_confirm_save(
             )
             await state.clear()
             return
+
+        # Update or create ScheduleV2 records
+        for (g_name, day), new_lessons in grouped_data.items():
+            # Get existing row
+            stmt = select(ScheduleV2).where(
+                ScheduleV2.group_name == g_name,
+                ScheduleV2.day == day
+            )
+            res = await session.execute(stmt)
+            sched = res.scalar_one_or_none()
+            
+            if sched:
+                # Update lessons list (merge by lesson number)
+                lessons_dict = {l["num"]: l for l in sched.lessons}
+                for nl in new_lessons:
+                    lessons_dict[nl["num"]] = nl
+                # Sort by lesson number
+                sched.lessons = sorted(lessons_dict.values(), key=lambda x: x["num"])
+            else:
+                # Create new row
+                sched = ScheduleV2(
+                    group_name=g_name,
+                    day=day,
+                    lessons=sorted(new_lessons, key=lambda x: x["num"])
+                )
+                session.add(sched)
         
-        # Bulk upsert to database
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-        
-        stmt = pg_insert(Schedule).values(schedule_data)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["group_name", "day", "lesson_number"],
-            set_={
-                "subject": stmt.excluded.subject,
-                "teacher": stmt.excluded.teacher,
-                "room": stmt.excluded.room,
-                "start_time": stmt.excluded.start_time,
-                "end_time": stmt.excluded.end_time,
-                "raw_text": stmt.excluded.raw_text,
-                "is_change": True,
-                "is_published": False,  # Keep as draft
-                "updated_by": callback.from_user.id,
-            },
-        )
-        
-        result = await session.execute(stmt)
         await session.commit()
-        
-        # Count affected groups
-        affected_groups = set(d.get("group_name") for d in schedule_data if d.get("group_name"))
         
         # Build success message
         success_lines = [
             "✅ <b>Замены сохранены как черновики</b>",
             "",
-            f"📊 Сохранено записей: {len(schedule_data)}",
-            f"👥 Групп: {len(affected_groups)}",
+            f"📊 Групп/дней обновлено: {len(grouped_data)}",
+            f"📝 Всего записей: {sum(len(l) for l in grouped_data.values())}",
         ]
-        
-        if affected_groups:
-            success_lines.append(f"   <i>{', '.join(sorted(affected_groups))}</i>")
         
         if errors:
             success_lines.append(f"\n⚠️ Пропущено с ошибками: {len(errors)}")
         
-        success_lines.append("\n📲 Перейдите в веб-панель, чтобы опубликовать замены:")
-        success_lines.append("https://aatk-schedule-bot.vercel.app")
+        success_lines.append("\n📲 Перейдите в веб-панель для публикации.")
         
-        # Delete preview message and send new one
-        try:
-            if preview_message_id:
-                await bot.delete_message(callback.message.chat.id, preview_message_id)
-        except Exception:
-            pass  # Ignore deletion errors
-        
-        await callback.message.answer(
+        await callback.message.edit_text(
             "\n".join(success_lines),
-            parse_mode="HTML",
-            disable_web_page_preview=True
+            parse_mode="HTML"
         )
+        
+        await state.clear()
         
         logger.info(
             f"OCR data saved by user {callback.from_user.id}: "
