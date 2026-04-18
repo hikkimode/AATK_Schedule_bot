@@ -49,8 +49,9 @@ def _admin_ocr_keyboard() -> InlineKeyboardMarkup:
 
 
 @router.message(Command("ocr"), F.chat.type == "private")
-async def cmd_ocr(message: Message, state: FSMContext, role: str) -> None:
+async def cmd_ocr(message: Message, state: FSMContext, data: dict) -> None:
     """Start OCR workflow - ask user to send a photo."""
+    role = data.get("role", "student")
     if role not in {"teacher", "superadmin"}:
         await message.answer("❌ Эта команда доступна только администраторам.")
         return
@@ -69,13 +70,15 @@ async def cmd_ocr(message: Message, state: FSMContext, role: str) -> None:
 async def process_ocr_photo(
     message: Message,
     state: FSMContext,
-    session: AsyncSession,
-    bot: Bot,
-    role: str
+    data: dict
 ) -> None:
     """Process photo for OCR and show preview."""
     if not message.photo:
         return
+    
+    role = data.get("role", "student")
+    session: AsyncSession = data.get("session")
+    bot: Bot = data.get("bot")
     
     if role not in {"teacher", "superadmin"}:
         await message.answer("❌ Доступ запрещен.")
@@ -182,22 +185,24 @@ async def ocr_wrong_input(message: Message, state: FSMContext) -> None:
 async def ocr_confirm_save(
     callback: CallbackQuery,
     state: FSMContext,
-    session: AsyncSession,
-    bot: Bot,
-    role: str
+    data: dict
 ) -> None:
     """Save parsed OCR data to database as drafts."""
     if not callback.from_user:
         return
     
+    role = data.get("role", "student")
+    session: AsyncSession = data.get("session")
+    bot: Bot = data.get("bot")
+    
     if role not in {"teacher", "superadmin"}:
         await callback.answer("❌ Доступ запрещен", show_alert=True)
         return
     
-    # Get stored data
-    data = await state.get_data()
-    items_data: list[dict[str, Any]] = data.get(OCR_DATA_KEY, [])
-    preview_message_id: int | None = data.get(OCR_MESSAGE_KEY)
+    # Get stored data from FSM
+    state_data = await state.get_data()
+    items_data: list[dict[str, Any]] = state_data.get(OCR_DATA_KEY, [])
+    preview_message_id: int | None = state_data.get(OCR_MESSAGE_KEY)
     
     if not items_data:
         await callback.answer("❌ Данные не найдены", show_alert=True)
