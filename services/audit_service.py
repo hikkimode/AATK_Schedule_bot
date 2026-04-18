@@ -62,15 +62,18 @@ class ScheduleService:
         return sorted(values, key=lambda item: order_map.get(item, len(order_map)))
 
     async def get_lessons(self, group_name: str, day: str, subgroup: int = 0) -> list[LessonItem]:
-        query = (
-            select(ScheduleV2)
-            .where(ScheduleV2.group_name == group_name, ScheduleV2.day == day)
+        query = select(ScheduleV2).where(
+            ScheduleV2.group_name == group_name,
+            ScheduleV2.day == day
         )
-        schedule_obj = await self._session.scalar(query)
-        if not schedule_obj or not schedule_obj.lessons:
+        result = await self._session.execute(query)
+        schedule_obj = result.scalar_one_or_none()
+        
+        if not schedule_obj:
             return []
             
-        lessons = [LessonItem.model_validate(item) for item in schedule_obj.lessons]
+        lessons_data = schedule_obj.lessons or []
+        lessons = [LessonItem.model_validate(item) for item in lessons_data]
         
         # Filter by subgroup: 0 (all) + user's specific subgroup
         if subgroup != 0:
@@ -83,7 +86,9 @@ class ScheduleService:
             func.lower(func.trim(ScheduleV2.group_name)) == group_name.lower().strip(),
             func.lower(func.trim(ScheduleV2.day)) == day.lower().strip(),
         )
-        schedule_obj = await self._session.scalar(query)
+        result = await self._session.execute(query)
+        schedule_obj = result.scalar_one_or_none()
+        
         if not schedule_obj or not schedule_obj.lessons:
             return None
             
