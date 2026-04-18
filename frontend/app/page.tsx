@@ -129,12 +129,20 @@ interface ScheduleChange {
 
 const DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 
-// Haptic feedback helper
-const haptic = {
-  light: () => window.Telegram?.WebApp?.HapticFeedback?.impactOccurred("light"),
-  medium: () => window.Telegram?.WebApp?.HapticFeedback?.impactOccurred("medium"),
-  success: () => window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred("success"),
-  error: () => window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred("error"),
+// Safe Haptic feedback helper with API existence checks
+const triggerHaptic = (type: "light" | "medium" | "heavy" | "success" | "error") => {
+  const haptic = window.Telegram?.WebApp?.HapticFeedback;
+  if (!haptic) return; // Silent return if API unavailable (desktop, old clients)
+
+  try {
+    if (type === "light" || type === "medium" || type === "heavy") {
+      haptic.impactOccurred(type);
+    } else if (type === "success" || type === "error") {
+      haptic.notificationOccurred(type);
+    }
+  } catch {
+    // Ignore any haptic errors
+  }
 };
 
 export default function Home() {
@@ -148,6 +156,11 @@ export default function Home() {
   const [isInTelegram, setIsInTelegram] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  
+  // Loading states for actions
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState<number | null>(null); // stores the id being deleted
+  const [isPublishing, setIsPublishing] = useState(false);
   
   // Modal states
   const [showModal, setShowModal] = useState(false);
@@ -248,9 +261,10 @@ export default function Home() {
   }, [changes]);
 
   const handleDelete = async (id: number) => {
-    haptic.medium();
+    triggerHaptic("medium");
     if (!window.confirm("Удалить эту замену?")) return;
 
+    setIsDeleting(id);
     const toastId = toast.loading("Удаление...");
     try {
       const res = await fetch(`${API_BASE_URL}/schedule/changes/${id}`, {
@@ -258,19 +272,46 @@ export default function Home() {
         headers: getAuthHeaders(),
       });
 
-      if (!res.ok) throw new Error(`Error: ${res.status}`);
+      if (!res.ok) {
+        // Parse detailed error for 422
+        if (res.status === 422) {
+          const errorData = await res.json();
+          const detail = errorData.detail;
+          if (Array.isArray(detail)) {
+            const messages = detail.map((err: { loc?: string[]; msg?: string }) => {
+              const field = err.loc?.slice(-1)[0] || "поле";
+              const fieldNames: Record<string, string> = {
+                group_name: "Группа",
+                subject: "Название предмета",
+                day: "День недели",
+                lesson_number: "Номер пары",
+                teacher: "Преподаватель",
+                room: "Кабинет",
+              };
+              return `Ошибка в поле '${fieldNames[field] || field}': ${err.msg}`;
+            });
+            throw new Error(messages.join("\n"));
+          }
+          throw new Error(detail || "Ошибка валидации");
+        }
+        throw new Error(`Ошибка сервера: ${res.status}`);
+      }
 
-      haptic.success();
+      triggerHaptic("success");
       await fetchData();
       toast.success("Замена удалена", { id: toastId });
     } catch (err) {
-      haptic.error();
-      toast.error("Ошибка при удалении", { id: toastId });
+      triggerHaptic("error");
+      const message = err instanceof Error ? err.message : "Ошибка при удалении";
+      toast.error(message, { id: toastId, duration: 5000 });
+    } finally {
+      setIsDeleting(null);
     }
   };
 
   const handlePublishAll = async () => {
-    haptic.medium();
+    triggerHaptic("medium");
+    setIsPublishing(true);
     const toastId = toast.loading("Публикация...");
     try {
       const res = await fetch(`${API_BASE_URL}/schedule/publish-all`, {
@@ -278,21 +319,30 @@ export default function Home() {
         headers: getAuthHeaders(),
       });
 
-      if (!res.ok) throw new Error(`Error: ${res.status}`);
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || `Ошибка сервера: ${res.status}`);
+      }
 
       const data = await res.json();
-      haptic.success();
+      triggerHaptic("success");
       await fetchData();
       toast.success(`Опубликовано ${data.published_count} замен`, { id: toastId });
     } catch (err) {
-      haptic.error();
-      toast.error("Ошибка публикации", { id: toastId });
+      triggerHaptic("error");
+      const message = err instanceof Error ? err.message : "Ошибка публикации";
+      toast.error(message, { id: toastId, duration: 5000 });
+    } finally {
+      setIsPublishing(false);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    haptic.medium();
+    triggerHaptic("medium");
+    
+    if (isSubmitting) return; // Prevent double submission
+    setIsSubmitting(true);
 
     const toastId = toast.loading(isEditing ? "Сохранение..." : "Создание...");
     try {
@@ -307,9 +357,35 @@ export default function Home() {
         body: JSON.stringify(formData),
       });
 
-      if (!res.ok) throw new Error(`Error: ${res.status}`);
+      if (!res.ok) {
+        // Parse detailed validation errors from FastAPI
+        if (res.status === 422) {
+          const errorData = await res.json();
+          const detail = errorData.detail;
+          
+          if (Array.isArray(detail)) {
+            // FastAPI validation error format: [{loc: ["body", "field"], msg: "...", type: "..."}]
+            const messages = detail.map((err: { loc?: string[]; msg?: string }) => {
+              const field = err.loc?.slice(-1)[0] || "поле";
+              const fieldNames: Record<string, string> = {
+                group_name: "Группа",
+                subject: "Название предмета",
+                day: "День недели",
+                lesson_number: "Номер пары",
+                teacher: "Преподаватель",
+                room: "Кабинет",
+              };
+              return `Ошибка в поле '${fieldNames[field] || field}': ${err.msg}`;
+            });
+            throw new Error(messages.join("\n"));
+          } else if (typeof detail === "string") {
+            throw new Error(detail);
+          }
+        }
+        throw new Error(`Ошибка сервера: ${res.status}`);
+      }
 
-      haptic.success();
+      triggerHaptic("success");
       await fetchData();
       toast.success(isEditing ? "Изменения сохранены" : "Замена создана", { id: toastId });
       
@@ -318,13 +394,16 @@ export default function Home() {
       setEditingId(null);
       setFormData({ group_name: "", subject: "", day: "", lesson_number: 1, teacher: "", room: "" });
     } catch (err) {
-      haptic.error();
-      toast.error("Ошибка", { id: toastId });
+      triggerHaptic("error");
+      const message = err instanceof Error ? err.message : "Ошибка при сохранении";
+      toast.error(message, { id: toastId, duration: 5000 });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const openEditModal = (change: ScheduleChange) => {
-    haptic.light();
+    triggerHaptic("light");
     setIsEditing(true);
     setEditingId(change.id);
     setFormData({
@@ -339,7 +418,7 @@ export default function Home() {
   };
 
   const openAddModal = () => {
-    haptic.light();
+    triggerHaptic("light");
     setIsEditing(false);
     setEditingId(null);
     setFormData({ group_name: "", subject: "", day: "", lesson_number: 1, teacher: "", room: "" });
@@ -380,7 +459,7 @@ export default function Home() {
               </p>
             </div>
             <button 
-              onClick={() => { haptic.light(); fetchData(); }}
+              onClick={() => { triggerHaptic("light"); fetchData(); }}
               className="p-2 rounded-full active:scale-95 transition-transform"
               style={{ backgroundColor: "var(--tg-theme-secondary-bg-color)" }}
             >
@@ -446,7 +525,7 @@ export default function Home() {
           {DAYS.map((day) => (
             <button
               key={day}
-              onClick={() => { haptic.light(); setSelectedDay(selectedDay === day ? null : day); }}
+              onClick={() => { if (navigator.vibrate) navigator.vibrate(50); setSelectedDay(selectedDay === day ? null : day); }}
               className="px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all"
               style={{
                 backgroundColor: selectedDay === day ? "var(--tg-theme-button-color)" : "var(--tg-theme-secondary-bg-color)",
@@ -547,10 +626,15 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => handleDelete(change.id)}
-                      className="flex items-center justify-center w-11 h-11 rounded-xl active:scale-95 transition-transform"
+                      disabled={isDeleting === change.id}
+                      className="flex items-center justify-center w-11 h-11 rounded-xl active:scale-95 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
                       style={{ backgroundColor: "rgba(239, 68, 68, 0.1)" }}
                     >
-                      <Trash2 className="w-5 h-5" style={{ color: "#ef4444" }} />
+                      {isDeleting === change.id ? (
+                        <div className="w-5 h-5 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Trash2 className="w-5 h-5" style={{ color: "#ef4444" }} />
+                      )}
                     </button>
                   </div>
                 )}
@@ -589,11 +673,16 @@ export default function Home() {
               </div>
               <button
                 onClick={handlePublishAll}
-                className="flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium active:scale-95 transition-transform"
+                disabled={isPublishing}
+                className="flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium active:scale-95 transition-transform disabled:opacity-70 disabled:cursor-not-allowed"
                 style={{ backgroundColor: "var(--tg-theme-button-color)", color: "white" }}
               >
-                <PublishIcon className="w-4 h-4" />
-                Опубликовать
+                {isPublishing ? (
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <PublishIcon className="w-4 h-4" />
+                )}
+                {isPublishing ? "Публикация..." : "Опубликовать"}
               </button>
             </div>
           </div>
@@ -668,18 +757,23 @@ export default function Home() {
               <div className="flex gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => { haptic.light(); setShowModal(false); }}
-                  className="flex-1 py-3 rounded-xl text-sm font-medium"
+                  onClick={() => { triggerHaptic("light"); setShowModal(false); }}
+                  disabled={isSubmitting}
+                  className="flex-1 py-3 rounded-xl text-sm font-medium disabled:opacity-50"
                   style={{ backgroundColor: "var(--tg-theme-secondary-bg-color)", color: "var(--tg-theme-text-color)" }}
                 >
                   Отмена
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-3 rounded-xl text-sm font-medium text-white"
+                  disabled={isSubmitting}
+                  className="flex-1 py-3 rounded-xl text-sm font-medium text-white disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   style={{ backgroundColor: "var(--tg-theme-button-color)" }}
                 >
-                  {isEditing ? "Сохранить" : "Создать"}
+                  {isSubmitting && (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  )}
+                  {isSubmitting ? (isEditing ? "Сохранение..." : "Создание...") : (isEditing ? "Сохранить" : "Создать")}
                 </button>
               </div>
             </form>
