@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import sys
 import traceback
@@ -124,7 +125,15 @@ def setup_exception_handlers(bot: Bot, admin_ids: set[int]):
         else:
             tb = traceback.format_exc()
             logger.exception("Unhandled exception")
-            admin_message = "🚨 UNHANDLED ERROR\nUser: " + str(user_id) + "\nType: " + type(exception).__name__ + "\nMessage: " + str(exception) + "\n\nTraceback:\n" + tb[-2000:]
+            # Escape HTML characters in traceback to prevent broken messages
+            safe_tb = html.escape(tb[-2000:])
+            admin_message = (
+                f"🚨 <b>UNHANDLED ERROR</b>\n"
+                f"<b>User:</b> {user_id}\n"
+                f"<b>Type:</b> {type(exception).__name__}\n"
+                f"<b>Message:</b> {html.escape(str(exception))}\n\n"
+                f"<b>Traceback:</b>\n<pre>{safe_tb}</pre>"
+            )
 
         try:
             if update.message:
@@ -137,7 +146,11 @@ def setup_exception_handlers(bot: Bot, admin_ids: set[int]):
         if admin_message:
             for admin_id in admin_ids:
                 try:
-                    await bot.send_message(admin_id, admin_message[:4000])
+                    await bot.send_message(
+                        admin_id, 
+                        admin_message[:4000], 
+                        parse_mode="HTML"
+                    )
                 except Exception as e:
                     logger.error("Failed to notify admin " + str(admin_id) + ": " + str(e))
 

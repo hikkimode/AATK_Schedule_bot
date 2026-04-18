@@ -49,9 +49,8 @@ def _admin_ocr_keyboard() -> InlineKeyboardMarkup:
 
 
 @router.message(Command("ocr"), F.chat.type == "private")
-async def cmd_ocr(message: Message, state: FSMContext, data: dict) -> None:
+async def cmd_ocr(message: Message, state: FSMContext, role: str, **kwargs) -> None:
     """Start OCR workflow - ask user to send a photo."""
-    role = data.get("role", "student")
     if role not in {"teacher", "superadmin"}:
         await message.answer("❌ Эта команда доступна только администраторам.")
         return
@@ -70,15 +69,14 @@ async def cmd_ocr(message: Message, state: FSMContext, data: dict) -> None:
 async def process_ocr_photo(
     message: Message,
     state: FSMContext,
-    data: dict
+    role: str,
+    session: AsyncSession,
+    bot: Bot,
+    **kwargs
 ) -> None:
     """Process photo for OCR and show preview."""
     if not message.photo:
         return
-    
-    role = data.get("role", "student")
-    session: AsyncSession = data.get("session")
-    bot: Bot = data.get("bot")
     
     if role not in {"teacher", "superadmin"}:
         await message.answer("❌ Доступ запрещен.")
@@ -185,15 +183,14 @@ async def ocr_wrong_input(message: Message, state: FSMContext) -> None:
 async def ocr_confirm_save(
     callback: CallbackQuery,
     state: FSMContext,
-    data: dict
+    role: str,
+    session: AsyncSession,
+    bot: Bot,
+    **kwargs
 ) -> None:
     """Save parsed OCR data to database as drafts."""
     if not callback.from_user:
         return
-    
-    role = data.get("role", "student")
-    session: AsyncSession = data.get("session")
-    bot: Bot = data.get("bot")
     
     if role not in {"teacher", "superadmin"}:
         await callback.answer("❌ Доступ запрещен", show_alert=True)
